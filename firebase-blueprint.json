@@ -1,0 +1,82 @@
+{
+  "entities": {
+    "User": {
+      "title": "User",
+      "description": "User profile for agents and brokers.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string" },
+        "email": { "type": "string" },
+        "name": { "type": "string" },
+        "role": { "type": "string", "enum": ["admin", "agent"] },
+        "licenseNumber": { "type": "string" },
+        "commissionProfile": {
+          "type": "object",
+          "properties": {
+            "splitType": { "type": "string", "enum": ["percentage", "flat"] },
+            "agentSplit": { "type": "number" },
+            "brokerSplit": { "type": "number" },
+            "capAmount": { "type": "number" },
+            "yearlyProduction": { "type": "number" }
+          }
+        },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "email", "role"]
+    },
+    "CDARequest": {
+      "title": "CDA Request",
+      "description": "Commission Disbursement Authorization request from an agent.",
+      "type": "object",
+      "properties": {
+        "agentId": { "type": "string" },
+        "agentName": { "type": "string" },
+        "propertyAddress": { "type": "string" },
+        "salePrice": { "type": "number" },
+        "commissionRate": { "type": "number" },
+        "grossCommission": { "type": "number" },
+        "companySplitAmount": { "type": "number" },
+        "agentGrossAmount": { "type": "number" },
+        "isOwnerAgent": { "type": "boolean" },
+        "payAgent": { "type": "boolean" },
+        "titleCompany": {
+          "type": "object",
+          "properties": {
+            "name": { "type": "string" },
+            "email": { "type": "string" },
+            "phone": { "type": "string" }
+          }
+        },
+        "status": { "type": "string", "enum": ["pending", "approved", "rejected"] },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "approvedAt": { "type": "string", "format": "date-time" }
+      }
+    },
+    "SaleRecord": {
+      "title": "Sale Record",
+      "description": "Historical sales data imported from external program.",
+      "type": "object",
+      "properties": {
+        "date": { "type": "string" },
+        "license": { "type": "string" },
+        "type": { "type": "string" },
+        "price": { "type": "number" },
+        "rate": { "type": "number" }
+      }
+    }
+  },
+  "firestore": {
+    "users": {
+      "schema": "User",
+      "description": "Collection of all registered users (Agents and Brokers)."
+    },
+    "cdaRequests": {
+      "schema": "CDARequest",
+      "description": "Requests for commission disbursement."
+    },
+    "salesHistory": {
+      "schema": "SaleRecord",
+      "description": "Imported historical sales data for production tracking."
+    }
+  }
+}

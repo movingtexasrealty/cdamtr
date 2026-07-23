@@ -1,0 +1,1000 @@
+/**
+ * @license
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+import { useState, useEffect } from 'react';
+import { 
+  collection, 
+  query, 
+  onSnapshot, 
+  getDocs, 
+  addDoc, 
+  writeBatch, 
+  doc, 
+  limit 
+} from 'firebase/firestore';
+import { db, handleFirestoreError, OperationType } from '../firebase';
+import { 
+  Download, 
+  Upload, 
+  Filter, 
+  Calendar, 
+  ChevronDown,
+  TrendingUp,
+  Award,
+  X,
+  ExternalLink,
+  ShieldCheck,
+  Printer,
+  CheckCircle2,
+  AlertTriangle,
+  RotateCcw,
+  Check,
+  Trash2
+} from 'lucide-react';
+import { 
+  BarChart, 
+  Bar, 
+  XAxis, 
+  YAxis, 
+  CartesianGrid, 
+  Tooltip, 
+  ResponsiveContainer,
+  Cell
+} from 'recharts';
+import { motion, AnimatePresence } from 'motion/react';
+
+export default function Reports() {
+  const [salesHistory, setSalesHistory] = useState<any[]>([]);
+  const [cdaRequests, setCdaRequests] = useState<any[]>([]);
+  const [importing, setImporting] = useState(false);
+  const [clearingHistory, setClearingHistory] = useState(false);
+  const [showClearHistoryConfirm, setShowClearHistoryConfirm] = useState(false);
+  const [agents, setAgents] = useState<any[]>([]);
+  const [selectedAgent, setSelectedAgent] = useState<any | null>(null);
+  const [selectedType, setSelectedType] = useState<string>('All');
+  const [dateRange, setDateRange] = useState({ 
+    start: '2025-01-01', 
+    end: new Date().toISOString().split('T')[0] 
+  });
+
+  // Insurance Renewal States
+  const [activeTab, setActiveTab] = useState<'production' | 'insurance'>('production');
+  const [insurancePeriod, setInsurancePeriod] = useState<string>('2025');
+  const [projectedGrowth, setProjectedGrowth] = useState<number>(5);
+  const [manualEstimates, setManualEstimates] = useState<Record<string, { transactions?: number; income?: number }>>({});
+
+  useEffect(() => {
+    // Fetch all sales history
+    const unsubscribe = onSnapshot(collection(db, 'salesHistory'), (snapshot) => {
+      setSalesHistory(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+    }, (error) => {
+      handleFirestoreError(error, OperationType.GET, 'salesHistory');
+    });
+
+    // Fetch agents for matching licenses
+    const unsubAgents = onSnapshot(collection(db, 'users'), (snapshot) => {
+      setAgents(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+    }, (error) => {
+      handleFirestoreError(error, OperationType.GET, 'users');
+    });
+
+    // Fetch all cdaRequests
+    const unsubCDAs = onSnapshot(collection(db, 'cdaRequests'), (snapshot) => {
+      setCdaRequests(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+    }, (error) => {
+      handleFirestoreError(error, OperationType.GET, 'cdaRequests');
+    });
+
+    return () => { 
+      unsubscribe(); 
+      unsubAgents(); 
+      unsubCDAs();
+    };
+  }, []);
+
+  const importSalesData = async () => {
+    setImporting(true);
+    try {
+      const existing = await getDocs(query(collection(db, 'salesHistory'), limit(1)));
+      if (!existing.empty) {
+        alert('Data already imported.');
+        return;
+      }
+
+      const response = await fetch('/src/initial_sales_data.csv');
+      const text = await response.text();
+      const lines = text.trim().split('\n').slice(1);
+
+      const batch = writeBatch(db);
+      lines.forEach((line) => {
+        const [date, license, type, price, rate] = line.split(',').map(s => s.replace(/"/g, '').trim());
+        const docRef = doc(collection(db, 'salesHistory'));
+        batch.set(docRef, {
+          date,
+          license,
+          type,
+          price: parseFloat(price),
+          rate: parseFloat(rate),
+          createdAt: new Date().toISOString()
+        });
+      });
+
+      await batch.commit();
+      alert('Successfully imported sales data.');
+    } catch (error) {
+      console.error('Import failed:', error);
+      alert('Failed to import sales data.');
+    } finally {
+      setImporting(false);
+    }
+  };
+
+  const clearSalesHistory = async () => {
+    setClearingHistory(true);
+    try {
+      const querySnapshot = await getDocs(collection(db, 'salesHistory'));
+      const docs = querySnapshot.docs;
+      
+      // Delete in batches of 500
+      for (let i = 0; i < docs.length; i += 500) {
+        const batch = writeBatch(db);
+        const chunk = docs.slice(i, i + 500);
+        chunk.forEach((doc) => {
+          batch.delete(doc.ref);
+        });
+        await batch.commit();
+      }
+      
+      setShowClearHistoryConfirm(false);
+      alert('Successfully removed all previous sales data.');
+    } catch (error) {
+      console.error('Failed to clear sales history:', error);
+      alert('Failed to clear sales history.');
+    } finally {
+      setClearingHistory(false);
+    }
+  };
+
+  const uniqueTypes = ['All', ...Array.from(new Set(salesHistory.map(s => s.type).filter(Boolean)))];
+
+  const filteredHistory = salesHistory.filter(s => {
+    const matchDate = s.date >= dateRange.start && s.date <= dateRange.end;
+    const matchType = selectedType === 'All' || s.type === selectedType;
+    return matchDate && matchType;
+  });
+
+  const agentProduction = filteredHistory.reduce((acc: any, curr: any) => {
+    const license = curr.license;
+    if (!acc[license]) {
+      const agent = agents.find(a => a.licenseNumber === license);
+      acc[license] = { 
+        name: agent?.name || `License: ${license}`, 
+        volume: 0, 
+        count: 0, 
+        commission: 0,
+        license: license
+      };
+    }
+    acc[license].volume += curr.price;
+    acc[license].count += 1;
+    acc[license].commission += (curr.price * (curr.rate / 100));
+    return acc;
+  }, {});
+
+  const chartData = Object.values(agentProduction).sort((a: any, b: any) => b.volume - a.volume);
+
+  const agentTransactions = selectedAgent 
+    ? filteredHistory
+        .filter(s => s.license === selectedAgent.license)
+        .sort((a, b) => b.date.localeCompare(a.date))
+    : [];
+
+  // INSURANCE HELPER FUNCTIONS
+  const getCombinedTransactions = () => {
+    const transactions: any[] = [];
+
+    salesHistory.forEach((sh) => {
+      let type = 'Home Sale';
+      if (sh.type === 'Leases') type = 'Lease';
+      else if (sh.type === 'Land') type = 'Land';
+
+      transactions.push({
+        id: sh.id,
+        date: sh.date,
+        type: type,
+        price: sh.price || 0,
+        commission: sh.price * ((sh.rate || 0) / 100),
+        client: 'Historical Client',
+        isOwnerAgent: false,
+        address: sh.address || 'Historical Sale',
+        agentName: 'Historical Agent'
+      });
+    });
+
+    cdaRequests.forEach((req) => {
+      if (req.status !== 'approved') return;
+      const date = req.closingDate || req.createdAt?.split('T')[0] || new Date().toISOString().split('T')[0];
+      transactions.push({
+        id: req.id,
+        date: date,
+        type: req.propertyType || 'Home Sale',
+        price: req.salePrice || 0,
+        commission: req.grossCommission || 0,
+        client: req.sellerName || req.buyerName || 'Client',
+        isOwnerAgent: !!req.isOwnerAgent,
+        address: req.propertyAddress || 'No Address',
+        agentName: req.agentName || 'MTR Agent'
+      });
+    });
+
+    return transactions;
+  };
+
+  const getInsuranceDateRange = () => {
+    const today = new Date();
+    if (insurancePeriod === '2025') {
+      return { start: '2025-01-01', end: '2025-12-31' };
+    } else if (insurancePeriod === '2026') {
+      return { start: '2026-01-01', end: '2026-12-31' };
+    } else if (insurancePeriod === 'last12') {
+      const oneYearAgo = new Date();
+      oneYearAgo.setFullYear(today.getFullYear() - 1);
+      return {
+        start: oneYearAgo.toISOString().split('T')[0],
+        end: today.toISOString().split('T')[0],
+      };
+    } else {
+      return { start: dateRange.start, end: dateRange.end };
+    }
+  };
+
+  const categories = [
+    { key: 'a', label: 'a. Residential Brokerage (1-4 units)', types: ['Home Sale'] },
+    { key: 'b', label: 'b. Commercial, Industrial, or Income Property', types: ['Commercial'] },
+    { key: 'c', label: 'c. Land and Lot', types: ['Land'] },
+    { key: 'd', label: 'd. Farm, Agriculture, Vineyard and/or Forestry', types: [] },
+    { key: 'e', label: 'e. Residential Real Estate Appraisal', types: [] },
+    { key: 'f', label: 'f. Commercial Real Estate Appraisal', types: [] },
+    { key: 'g', label: 'g. Real Estate Leasing Fees', types: ['Lease'] },
+    { key: 'h', label: 'h. Residential Property Management (1-4 Units)', types: [] },
+    { key: 'i', label: 'i. Commercial Property Management (5+ Units)', types: [] },
+    { key: 'j', label: 'j. Association Management (Condo, Co-Op, etc.)', types: [] },
+    { key: 'k', label: 'k. Mortgage Brokerage/Financial Arrangements', types: [] },
+    { key: 'l', label: 'l. Business Opportunities Brokerages', types: [] },
+    { key: 'm', label: 'm. Real Estate Consulting/Counseling', types: [] },
+    { key: 'n', label: 'n. Other (Referral Fees)', types: ['Referral'] },
+  ];
+
+  const handleEstimateChange = (key: string, field: 'transactions' | 'income', value: string) => {
+    const num = value === '' ? undefined : parseFloat(value);
+    setManualEstimates(prev => ({
+      ...prev,
+      [key]: {
+        ...prev[key],
+        [field]: num
+      }
+    }));
+  };
+
+  const resetEstimates = () => {
+    setManualEstimates({});
+  };
+
+  const range = getInsuranceDateRange();
+  const allTx = getCombinedTransactions();
+  const pastTxList = allTx.filter(tx => tx.date >= range.start && tx.date <= range.end);
+
+  const calculatedRows = categories.map((cat) => {
+    const matchedTx = pastTxList.filter((tx) => cat.types.includes(tx.type));
+    const pastCount = matchedTx.length;
+    const pastIncome = matchedTx.reduce((sum, tx) => sum + (tx.commission || 0), 0);
+
+    const projectedMultiplier = 1 + (projectedGrowth / 100);
+    
+    const estCountOverride = manualEstimates[cat.key]?.transactions;
+    const estCount = estCountOverride !== undefined ? estCountOverride : Math.round(pastCount * projectedMultiplier);
+
+    const estIncomeOverride = manualEstimates[cat.key]?.income;
+    const estIncome = estIncomeOverride !== undefined ? estIncomeOverride : Number((pastIncome * projectedMultiplier).toFixed(2));
+
+    return {
+      ...cat,
+      pastCount,
+      pastIncome,
+      estCount,
+      estIncome,
+    };
+  });
+
+  const totalPastCount = calculatedRows.reduce((sum, row) => sum + row.pastCount, 0);
+  const totalPastIncome = calculatedRows.reduce((sum, row) => sum + row.pastIncome, 0);
+  const totalEstCount = calculatedRows.reduce((sum, row) => sum + row.estCount, 0);
+  const totalEstIncome = calculatedRows.reduce((sum, row) => sum + row.estIncome, 0);
+
+  // Operations Metrics Calculation
+  const clientCommissions: Record<string, number> = {};
+  pastTxList.forEach((tx) => {
+    const client = tx.client || 'Unknown Client';
+    if (client !== 'Historical Client' && client !== 'Client' && client !== 'Unknown Client') {
+      clientCommissions[client] = (clientCommissions[client] || 0) + tx.commission;
+    }
+  });
+  
+  let largestClient = '';
+  let largestCommission = 0;
+  Object.entries(clientCommissions).forEach(([client, comm]) => {
+    if (comm > largestCommission) {
+      largestCommission = comm;
+      largestClient = client;
+    }
+  });
+
+  const concentrationPct = totalPastIncome > 0 ? (largestCommission / totalPastIncome) * 100 : 0;
+  const hasConcentration = concentrationPct > 25;
+
+  const ownerAgentTx = pastTxList.filter((tx) => tx.isOwnerAgent);
+  const totalOwnerAgentIncome = ownerAgentTx.reduce((sum, tx) => sum + tx.commission, 0);
+  const hasOwnerAgentTransactions = ownerAgentTx.length > 0;
+
+  // Dual Agency Representation matching by identical non-empty property address
+  const addressCounts: Record<string, number> = {};
+  pastTxList.forEach((tx) => {
+    if (tx.address && tx.address !== 'Historical Sale' && tx.address !== 'No Address') {
+      const cleanAddress = tx.address.trim().toLowerCase();
+      addressCounts[cleanAddress] = (addressCounts[cleanAddress] || 0) + 1;
+    }
+  });
+  
+  const dualTxCount = Object.values(addressCounts).filter(count => count >= 2).length;
+  const dualAgencyPercentage = totalPastCount > 0 ? (dualTxCount / totalPastCount) * 100 : 0;
+
+  const soldTx = pastTxList.filter(tx => tx.type === 'Home Sale' || tx.type === 'Land' || tx.type === 'Commercial');
+  const totalSoldPrice = soldTx.reduce((sum, tx) => sum + tx.price, 0);
+  const avgPropertyValue = soldTx.length > 0 ? totalSoldPrice / soldTx.length : 0;
+
+  return (
+    <div className="space-y-8 pb-20">
+      {/* Header and switcher */}
+      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 print:hidden">
+        <div>
+          <h1 className="text-2xl font-black text-slate-900 tracking-tight">Production & RENEWAL Reports</h1>
+          <p className="text-sm font-semibold text-slate-500">Analyze performance or assist your E&amp;O liability renewal.</p>
+        </div>
+
+        <div className="bg-slate-100 p-1 rounded-xl flex border border-slate-200">
+          <button
+            onClick={() => setActiveTab('production')}
+            className={`px-4 py-2 rounded-lg font-black text-xs uppercase tracking-wider transition-all duration-200 ${
+              activeTab === 'production' 
+                ? 'bg-white text-slate-900 shadow-sm' 
+                : 'text-slate-500 hover:text-slate-900'
+            }`}
+          >
+            Production Analytics
+          </button>
+          <button
+            onClick={() => setActiveTab('insurance')}
+            className={`px-4 py-2 rounded-lg font-black text-xs uppercase tracking-wider transition-all duration-200 flex items-center gap-1.5 ${
+              activeTab === 'insurance' 
+                ? 'bg-white text-slate-900 shadow-sm' 
+                : 'text-slate-500 hover:text-slate-900'
+            }`}
+          >
+            <ShieldCheck size={14} className={activeTab === 'insurance' ? 'text-emerald-500' : 'text-slate-400'} />
+            Insurance Renewal Helper
+          </button>
+        </div>
+      </div>
+
+      {activeTab === 'production' ? (
+        <>
+          <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 print:hidden">
+            <div>
+              <h2 className="text-xl font-bold text-slate-900">Production Reports</h2>
+              <p className="text-slate-500">Analyze performance across all agents and periods.</p>
+            </div>
+            <div className="flex items-center gap-3">
+              {salesHistory.length > 0 && (
+                <button 
+                  onClick={() => setShowClearHistoryConfirm(true)}
+                  className="flex items-center gap-2 bg-rose-50 text-rose-600 border border-rose-100 px-4 py-2.5 rounded-xl font-bold hover:bg-rose-100 transition-colors text-sm"
+                  title="Remove all imported sales history"
+                >
+                  <Trash2 size={18} />
+                  Remove Imported History
+                </button>
+              )}
+              <button 
+                onClick={importSalesData}
+                disabled={importing}
+                className="flex items-center gap-2 bg-slate-100 text-slate-700 px-4 py-2.5 rounded-xl font-bold hover:bg-slate-200 transition-colors text-sm disabled:opacity-50"
+              >
+                <Upload size={18} />
+                {importing ? 'Importing...' : 'Import History'}
+              </button>
+              <button className="flex items-center gap-2 bg-blue-600 text-white px-4 py-2.5 rounded-xl font-bold hover:bg-blue-700 shadow-lg shadow-blue-200 transition-all text-sm">
+                <Download size={18} />
+                Export 1099
+              </button>
+            </div>
+          </div>
+
+          <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-sm flex flex-wrap items-center gap-6 print:hidden">
+            <div className="flex items-center gap-3">
+              <Calendar size={18} className="text-slate-400 animate-pulse" />
+              <div className="flex items-center gap-2">
+                <input 
+                  type="date" 
+                  className="px-3 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-sm font-medium text-slate-700 outline-none hover:border-blue-300 focus:border-blue-500 transition-colors"
+                  value={dateRange.start}
+                  onChange={e => setDateRange({...dateRange, start: e.target.value})}
+                />
+                <span className="text-slate-400 font-medium">to</span>
+                <input 
+                  type="date" 
+                  className="px-3 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-sm font-medium text-slate-700 outline-none hover:border-blue-300 focus:border-blue-500 transition-colors"
+                  value={dateRange.end}
+                  onChange={e => setDateRange({...dateRange, end: e.target.value})}
+                />
+              </div>
+            </div>
+
+            <div className="h-6 w-px bg-slate-200 hidden sm:block" />
+
+            <div className="flex items-center gap-3">
+              <Filter size={18} className="text-slate-400" />
+              <div className="flex items-center gap-2">
+                <span className="text-xs font-bold text-slate-400 uppercase tracking-wider">Transaction Type:</span>
+                <select
+                  className="px-3 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-sm font-semibold text-slate-700 outline-none hover:border-blue-300 focus:border-blue-500 transition-colors cursor-pointer"
+                  value={selectedType}
+                  onChange={e => setSelectedType(e.target.value)}
+                >
+                  {uniqueTypes.map(t => (
+                    <option key={t} value={t}>
+                      {t === 'All' ? 'All Types' : t}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+            <div className="bg-white p-8 rounded-3xl border border-slate-200 shadow-sm">
+              <h3 className="text-lg font-bold text-slate-800 mb-8 flex items-center gap-2">
+                <TrendingUp size={20} className="text-blue-500" />
+                Top Production by Agent
+              </h3>
+              <div className="h-[400px] w-full">
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart data={chartData} layout="vertical" margin={{ left: 40, right: 40 }}>
+                    <CartesianGrid strokeDasharray="3 3" horizontal={true} vertical={false} stroke="#f1f5f9" />
+                    <XAxis type="number" hide />
+                    <YAxis 
+                      type="category" 
+                      dataKey="name" 
+                      axisLine={false} 
+                      tickLine={false} 
+                      tick={{fill: '#64748b', fontSize: 12}}
+                      width={150}
+                    />
+                    <Tooltip 
+                      cursor={{fill: '#f8fafc'}}
+                      contentStyle={{backgroundColor: '#fff', borderRadius: '12px', border: 'none', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)'}}
+                      formatter={(value: any) => `$${value.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
+                    />
+                    <Bar 
+                      dataKey="volume" 
+                      radius={[0, 8, 8, 0]} 
+                      barSize={24}
+                      style={{ cursor: 'pointer' }}
+                      onClick={(data) => setSelectedAgent(data)}
+                    >
+                      {chartData.map((_entry, index) => (
+                        <Cell key={`cell-${index}`} fill={index === 0 ? '#1e3a8a' : '#3b82f6'} />
+                      ))}
+                    </Bar>
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+            </div>
+
+            <div className="bg-white rounded-3xl border border-slate-200 shadow-sm overflow-hidden p-8">
+              <h3 className="text-lg font-bold text-slate-800 mb-6 flex items-center gap-2">
+                <Award size={20} className="text-amber-500" />
+                Production Table
+              </h3>
+              <div className="overflow-x-auto">
+                <table className="w-full text-left">
+                  <thead>
+                    <tr className="border-b border-slate-100">
+                      <th className="pb-4 text-xs font-bold text-slate-400 uppercase tracking-wider">Agent</th>
+                      <th className="pb-4 text-xs font-bold text-slate-400 uppercase tracking-wider text-right">Units</th>
+                      <th className="pb-4 text-xs font-bold text-slate-400 uppercase tracking-wider text-right">Volume</th>
+                      <th className="pb-4 text-xs font-bold text-slate-400 uppercase tracking-wider text-right">Est. Comm</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-50">
+                    {chartData.length === 0 ? (
+                      <tr><td colSpan={4} className="py-8 text-center text-slate-400">No data for selected period.</td></tr>
+                    ) : (
+                      chartData.map((item: any) => (
+                        <tr 
+                          key={item.license} 
+                          className="group hover:bg-slate-50 transition-colors cursor-pointer"
+                          onClick={() => setSelectedAgent(item)}
+                        >
+                          <td className="py-4">
+                            <div className="flex items-center gap-2">
+                              <span className="font-bold text-slate-700">{item.name}</span>
+                              <ExternalLink size={12} className="text-slate-300 opacity-0 group-hover:opacity-100 transition-opacity" />
+                            </div>
+                          </td>
+                          <td className="py-4 text-right text-slate-600 font-medium">{item.count}</td>
+                          <td className="py-4 text-right font-bold text-slate-900">${item.volume.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+                          <td className="py-4 text-right font-bold text-blue-600">${item.commission.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+                        </tr>
+                      ))
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        </>
+      ) : (
+        <>
+          {/* INSURANCE RENEWAL QUESTIONNAIRE VIEW */}
+          <div className="bg-emerald-50 rounded-2xl border border-emerald-100 p-6 flex flex-col md:flex-row md:items-center justify-between gap-6 print:bg-white print:border-none print:p-0">
+            <div className="space-y-1">
+              <h2 className="text-xl font-bold text-emerald-900 flex items-center gap-2">
+                <ShieldCheck className="text-emerald-600 print:hidden" />
+                CNA / Victor Liability Insurance Renewal Report
+              </h2>
+              <p className="text-sm text-emerald-700 print:text-slate-600">
+                This report is specifically formatted to match <strong className="font-bold">Section 2: Professional Services</strong> of your annual E&amp;O insurance renewal application. It aggregates raw income, transaction counts, and applies projections.
+              </p>
+            </div>
+            <div className="flex items-center gap-3 print:hidden">
+              <button 
+                onClick={() => window.print()}
+                className="flex items-center gap-2 bg-emerald-600 text-white px-4 py-2.5 rounded-xl font-bold hover:bg-emerald-700 shadow-lg shadow-emerald-200 transition-all text-sm"
+              >
+                <Printer size={18} />
+                Print PDF Reference
+              </button>
+            </div>
+          </div>
+
+          {/* Configuration Controls */}
+          <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm grid grid-cols-1 md:grid-cols-3 gap-6 print:hidden">
+            {/* Period Selector */}
+            <div className="space-y-2">
+              <label className="text-xs font-black text-slate-400 uppercase tracking-widest block">1. Select Past Fiscal Year</label>
+              <div className="relative">
+                <Calendar size={18} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" />
+                <select
+                  className="w-full pl-10 pr-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm font-semibold text-slate-700 outline-none hover:border-emerald-300 focus:border-emerald-500 transition-colors cursor-pointer appearance-none animate-none"
+                  value={insurancePeriod}
+                  onChange={e => setInsurancePeriod(e.target.value)}
+                >
+                  <option value="2025">Calendar Year 2025</option>
+                  <option value="2026">Calendar Year 2026 (YTD)</option>
+                  <option value="last12">Last 12 Months (Trailing)</option>
+                </select>
+                <ChevronDown size={16} className="absolute right-3.5 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
+              </div>
+              <p className="text-[10px] text-slate-400 italic">
+                Past Year Date Range: {range.start} to {range.end}
+              </p>
+            </div>
+
+            {/* Growth rate projection input */}
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <label className="text-xs font-black text-slate-400 uppercase tracking-widest block">2. Projected Growth Estimator</label>
+                <span className="text-xs font-bold text-emerald-600 bg-emerald-50 px-2 py-0.5 rounded-md">+{projectedGrowth}%</span>
+              </div>
+              <div className="flex items-center gap-4 py-1">
+                <input 
+                  type="range" 
+                  min="-50" 
+                  max="100" 
+                  step="5"
+                  className="flex-1 accent-emerald-600 h-2 bg-slate-100 rounded-lg cursor-pointer"
+                  value={projectedGrowth}
+                  onChange={e => setProjectedGrowth(parseInt(e.target.value))}
+                />
+                <input 
+                  type="number" 
+                  className="w-16 px-2 py-1 bg-slate-50 border border-slate-200 rounded-lg text-sm font-semibold text-slate-700 text-center"
+                  value={projectedGrowth}
+                  onChange={e => setProjectedGrowth(parseInt(e.target.value) || 0)}
+                />
+              </div>
+              <p className="text-[10px] text-slate-400 italic">
+                Automatically projects "Next 12 Months: Estimates" column values.
+              </p>
+            </div>
+
+            {/* Reset overrides */}
+            <div className="space-y-2 flex flex-col justify-end">
+              <label className="text-xs font-black text-slate-400 uppercase tracking-widest block">3. Adjust Projections</label>
+              <button
+                onClick={resetEstimates}
+                disabled={Object.keys(manualEstimates).length === 0}
+                className="w-full flex items-center justify-center gap-2 px-4 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-600 font-bold rounded-xl transition-all text-sm disabled:opacity-40"
+              >
+                <RotateCcw size={16} />
+                Reset Estimate Overrides
+              </button>
+              <p className="text-[10px] text-slate-400 italic text-center">
+                Click any cell in the "Next 12 Months: Estimates" column to manually adjust.
+              </p>
+            </div>
+          </div>
+
+          {/* Section 2 Table */}
+          <div className="bg-white rounded-3xl border border-slate-200 shadow-sm overflow-hidden p-8 print:border-none print:p-0">
+            <div className="mb-6 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+              <div>
+                <h3 className="text-lg font-bold text-slate-800">CNA Section 2: Professional Services Table</h3>
+                <p className="text-xs text-slate-400">Values represent <strong className="font-bold">Gross Commissions BEFORE splits</strong> with agents or salespeople.</p>
+              </div>
+              <div className="text-xs text-emerald-600 font-bold bg-emerald-50 px-3 py-1 rounded-full border border-emerald-100 flex items-center gap-1.5 print:hidden">
+                <Check size={14} /> Correct Lease / Co-Broker calculation applied
+              </div>
+            </div>
+
+            <div className="overflow-x-auto">
+              <table className="w-full text-left border-collapse">
+                <thead>
+                  <tr className="border-b border-slate-200 bg-slate-50/50">
+                    <th className="p-4 text-[10px] font-black text-slate-400 uppercase tracking-widest w-2/5">Employee Category / Service</th>
+                    <th className="p-4 text-[10px] font-black text-slate-400 uppercase tracking-widest text-center border-l border-slate-100" colSpan={2}>
+                      Past Fiscal Year Ending ({insurancePeriod})
+                    </th>
+                    <th className="p-4 text-[10px] font-black text-slate-400 uppercase tracking-widest text-center border-l border-slate-100" colSpan={2}>
+                      Next 12 Months: Estimates
+                    </th>
+                  </tr>
+                  <tr className="border-b border-slate-200 text-slate-500 bg-slate-50/20">
+                    <th className="p-3 text-xs font-bold italic">Do not report property values</th>
+                    <th className="p-3 text-xs font-bold text-center border-l border-slate-100 w-24">Transactions</th>
+                    <th className="p-3 text-xs font-bold text-right w-36">Income</th>
+                    <th className="p-3 text-xs font-bold text-center border-l border-slate-100 w-24">Transactions</th>
+                    <th className="p-3 text-xs font-bold text-right w-36">Income</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100 text-sm">
+                  {calculatedRows.map((row) => {
+                    const isOverriddenTx = manualEstimates[row.key]?.transactions !== undefined;
+                    const isOverriddenIncome = manualEstimates[row.key]?.income !== undefined;
+                    const hasData = row.pastCount > 0 || row.pastIncome > 0;
+
+                    return (
+                      <tr 
+                        key={row.key} 
+                        className={`hover:bg-slate-50/50 transition-colors ${
+                          hasData ? 'bg-emerald-50/5 font-semibold text-slate-900' : 'text-slate-400'
+                        }`}
+                      >
+                        <td className="p-4 font-medium text-slate-700">
+                          {row.label}
+                        </td>
+
+                        <td className="p-4 text-center font-bold text-slate-800 border-l border-slate-100 bg-slate-50/20">
+                          {row.pastCount > 0 ? row.pastCount : '—'}
+                        </td>
+
+                        <td className="p-4 text-right font-black text-slate-900">
+                          {row.pastIncome > 0 ? `$${row.pastIncome.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : '—'}
+                        </td>
+
+                        <td className="p-2 text-center border-l border-slate-100 bg-slate-50/20 print:p-4">
+                          <input
+                            type="number"
+                            className={`w-full bg-transparent border-none text-center outline-none font-bold text-slate-800 focus:bg-emerald-50 focus:ring-1 focus:ring-emerald-300 rounded-md py-2 transition-all print:text-center ${
+                              isOverriddenTx ? 'text-emerald-600 bg-emerald-50/30' : ''
+                            }`}
+                            placeholder="0"
+                            value={row.estCount === 0 ? '' : row.estCount}
+                            onChange={(e) => handleEstimateChange(row.key, 'transactions', e.target.value)}
+                          />
+                        </td>
+
+                        <td className="p-2 text-right print:p-4">
+                          <div className="flex items-center justify-end gap-1">
+                            <span className="text-xs text-slate-400">$</span>
+                            <input
+                              type="number"
+                              className={`w-28 bg-transparent border-none text-right outline-none font-black text-slate-900 focus:bg-emerald-50 focus:ring-1 focus:ring-emerald-300 rounded-md py-2 transition-all print:text-right ${
+                                isOverriddenIncome ? 'text-emerald-600 bg-emerald-50/30' : ''
+                              }`}
+                              placeholder="0.00"
+                              step="0.01"
+                              value={row.estIncome === 0 ? '' : row.estIncome}
+                              onChange={(e) => handleEstimateChange(row.key, 'income', e.target.value)}
+                            />
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
+
+                  <tr className="bg-slate-900 text-white font-bold text-sm border-t-2 border-slate-800">
+                    <td className="p-4 text-left uppercase tracking-wider font-black">
+                      TOTAL GROSS INCOME
+                    </td>
+                    <td className="p-4 text-center border-l border-slate-700 bg-slate-800 font-black">
+                      {totalPastCount}
+                    </td>
+                    <td className="p-4 text-right font-black">
+                      ${totalPastIncome.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                    </td>
+                    <td className="p-4 text-center border-l border-slate-700 bg-slate-800 font-black">
+                      {totalEstCount}
+                    </td>
+                    <td className="p-4 text-right font-black">
+                      ${totalEstIncome.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          {/* Operations Assistant Cards */}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-8 print:break-inside-avoid">
+            <div className="bg-white p-6 rounded-3xl border border-slate-200 shadow-sm space-y-6">
+              <h3 className="text-md font-bold text-slate-800 border-b pb-3 flex items-center gap-2">
+                <ShieldCheck size={18} className="text-emerald-600" />
+                Operations Questionnaire Assistant (Part A)
+              </h3>
+
+              <div className="space-y-2">
+                <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest block">Question 4: Client Concentration</span>
+                <p className="text-sm text-slate-700">
+                  Does the firm have any one client which represents more than 25% of the firm's income?
+                </p>
+                <div className="flex items-center gap-4 mt-2">
+                  <span className={`px-3 py-1 rounded-full text-xs font-bold border ${
+                    hasConcentration 
+                      ? 'bg-rose-50 text-rose-700 border-rose-100' 
+                      : 'bg-emerald-50 text-emerald-700 border-emerald-100'
+                  }`}>
+                    {hasConcentration ? 'YES (Concentration Detected)' : 'NO (Passes Limit)'}
+                  </span>
+                  <span className="text-xs text-slate-500 font-medium">
+                    {largestClient ? (
+                      <>Largest Client: <strong className="font-semibold text-slate-700">{largestClient}</strong> represents {concentrationPct.toFixed(1)}% of income (${largestCommission.toLocaleString()})</>
+                    ) : (
+                      'No clients recorded in recent CDA requests'
+                    )}
+                  </span>
+                </div>
+              </div>
+
+              <div className="space-y-2 border-t pt-4">
+                <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest block">Question 5: Owned Properties</span>
+                <p className="text-sm text-slate-700">
+                  Does anyone in the firm sell/lease properties they own?
+                </p>
+                <div className="flex flex-col gap-2 mt-2">
+                  <div className="flex items-center gap-3">
+                    <span className={`px-3 py-1 rounded-full text-xs font-bold border ${
+                      hasOwnerAgentTransactions 
+                        ? 'bg-rose-50 text-rose-700 border-rose-100 animate-pulse' 
+                        : 'bg-emerald-50 text-emerald-700 border-emerald-100'
+                    }`}>
+                      {hasOwnerAgentTransactions ? 'YES' : 'NO'}
+                    </span>
+                    <span className="text-xs text-slate-500 font-medium">
+                      Total income from owner-agent properties: <strong className="font-semibold text-slate-700">${totalOwnerAgentIncome.toLocaleString()}</strong>
+                    </span>
+                  </div>
+                  {hasOwnerAgentTransactions && (
+                    <div className="p-3 bg-slate-50 rounded-xl border border-slate-100 text-xs text-slate-600 space-y-1">
+                      <p className="font-semibold text-slate-700">Identified Owner-Agent Requests:</p>
+                      <ul className="list-disc list-inside space-y-1">
+                        {ownerAgentTx.map((tx: any, idx) => (
+                          <li key={idx}>
+                            {tx.agentName} — {tx.address} (${tx.commission.toLocaleString()})
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            <div className="bg-white p-6 rounded-3xl border border-slate-200 shadow-sm space-y-6">
+              <h3 className="text-md font-bold text-slate-800 border-b pb-3 flex items-center gap-2">
+                <ShieldCheck size={18} className="text-emerald-600" />
+                Operations Questionnaire Assistant (Part B)
+              </h3>
+
+              <div className="space-y-2">
+                <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest block">Question 7: Dual Representation</span>
+                <p className="text-sm text-slate-700">
+                  Percentage of transactions in the past 12 months where the firm represented both buyer and seller?
+                </p>
+                <div className="flex items-center gap-4 mt-2">
+                  <span className="text-2xl font-black text-emerald-600">
+                    {dualAgencyPercentage.toFixed(1)}%
+                  </span>
+                  <span className="text-xs text-slate-500 font-medium">
+                    {dualTxCount} dual-sided transaction(s) identified out of {totalPastCount} total transactions.
+                  </span>
+                </div>
+              </div>
+
+              <div className="space-y-2 border-t pt-4">
+                <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest block">Question 8: Average Value Sold</span>
+                <p className="text-sm text-slate-700">
+                  What was the average value of properties sold by the firm in the past 12 months?
+                </p>
+                <div className="flex items-center gap-4 mt-2">
+                  <span className="text-2xl font-black text-slate-900">
+                    ${avgPropertyValue > 0 ? Math.round(avgPropertyValue).toLocaleString() : '0'}
+                  </span>
+                  <span className="text-xs text-slate-500 font-medium">
+                    Calculated across {soldTx.length} sold propert{soldTx.length === 1 ? 'y' : 'ies'} (excluding lease transactions).
+                  </span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </>
+      )}
+
+      {/* Selected Agent Modal for Production View */}
+      <AnimatePresence>
+        {selectedAgent && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+            <motion.div 
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => setSelectedAgent(null)}
+              className="absolute inset-0 bg-slate-900/40 backdrop-blur-sm"
+            />
+            <motion.div 
+              initial={{ opacity: 0, scale: 0.95, y: 20 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95, y: 20 }}
+              className="relative w-full max-w-4xl bg-white rounded-3xl shadow-2xl overflow-hidden border border-slate-200"
+            >
+              <div className="p-6 border-b border-slate-100 flex items-center justify-between bg-white sticky top-0 z-10">
+                <div>
+                  <h2 className="text-2xl font-black text-slate-900 mb-1">{selectedAgent.name}</h2>
+                  <p className="text-sm text-slate-500 font-medium">
+                    Performance Summary • {selectedAgent.count} transactions • {dateRange.start} to {dateRange.end}
+                  </p>
+                </div>
+                <button 
+                  onClick={() => setSelectedAgent(null)}
+                  className="p-2 hover:bg-slate-100 rounded-full transition-colors text-slate-400 hover:text-slate-600"
+                >
+                  <X size={24} />
+                </button>
+              </div>
+
+              <div className="p-6 max-h-[70vh] overflow-y-auto">
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-8">
+                  <div className="p-4 bg-blue-50 rounded-2xl border border-blue-100">
+                    <p className="text-[10px] font-black text-blue-400 uppercase tracking-widest mb-1">Total Volume</p>
+                    <p className="text-2xl font-black text-blue-900 leading-none">
+                      ${selectedAgent.volume.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                    </p>
+                  </div>
+                  <div className="p-4 bg-amber-50 rounded-2xl border border-amber-100">
+                    <p className="text-[10px] font-black text-amber-500 uppercase tracking-widest mb-1">Total Units</p>
+                    <p className="text-2xl font-black text-amber-900 leading-none">{selectedAgent.count}</p>
+                  </div>
+                  <div className="p-4 bg-emerald-50 rounded-2xl border border-emerald-100">
+                    <p className="text-[10px] font-black text-emerald-500 uppercase tracking-widest mb-1">Est. Commission</p>
+                    <p className="text-2xl font-black text-emerald-900 leading-none">
+                      ${selectedAgent.commission.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                    </p>
+                  </div>
+                </div>
+
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left">
+                    <thead>
+                      <tr className="border-b border-slate-100">
+                        <th className="pb-3 text-[10px] font-black text-slate-400 uppercase tracking-widest">Date / Address</th>
+                        <th className="pb-3 text-[10px] font-black text-slate-400 uppercase tracking-widest">Type</th>
+                        <th className="pb-3 text-[10px] font-black text-slate-400 uppercase tracking-widest text-right">Price</th>
+                        <th className="pb-3 text-[10px] font-black text-slate-400 uppercase tracking-widest text-right">Rate</th>
+                        <th className="pb-3 text-[10px] font-black text-slate-400 uppercase tracking-widest text-right">Commission</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-50">
+                      {agentTransactions.map((tx, idx) => {
+                        const commission = tx.price * (tx.rate / 100);
+                        return (
+                          <tr key={idx} className="hover:bg-slate-50 transition-colors">
+                            <td className="py-4">
+                              <div className="text-sm font-bold text-slate-700">{tx.date}</div>
+                              <div className="text-[10px] font-black text-slate-400 uppercase tracking-tight truncate max-w-[200px]">
+                                {tx.address || 'Address Not Recorded'}
+                              </div>
+                            </td>
+                            <td className="py-4">
+                              <span className="text-[10px] font-black text-slate-500 bg-slate-100 px-2 py-0.5 rounded uppercase tracking-tighter">
+                                {tx.type}
+                              </span>
+                            </td>
+                            <td className="py-4 text-sm font-bold text-slate-900 text-right">
+                              ${tx.price.toLocaleString()}
+                            </td>
+                            <td className="py-4 text-sm font-medium text-slate-400 text-right">{tx.rate}%</td>
+                            <td className="py-4 text-sm font-black text-blue-600 text-right">
+                              ${commission.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* Clear Sales History Confirmation Modal */}
+      {showClearHistoryConfirm && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl w-full max-w-md p-6 shadow-2xl animate-in fade-in zoom-in duration-200">
+            <div className="flex items-center gap-4 mb-4 text-rose-600">
+              <div className="w-12 h-12 rounded-full bg-rose-50 flex items-center justify-center">
+                <Trash2 size={24} />
+              </div>
+              <h3 className="text-xl font-black">Remove Sales Data?</h3>
+            </div>
+            <p className="text-slate-600 mb-4 font-medium leading-relaxed">
+              Are you sure you want to permanently remove all previously imported historical sales data?
+            </p>
+            <div className="bg-rose-50/50 p-4 rounded-xl border border-rose-100 mb-6 space-y-1">
+              <p className="text-xs font-bold text-rose-800">Total records to be removed: {salesHistory.length}</p>
+            </div>
+            <p className="text-xs text-rose-500 font-bold uppercase mb-6">
+              This action is permanent and cannot be undone.
+            </p>
+            <div className="flex gap-3">
+              <button
+                onClick={() => setShowClearHistoryConfirm(false)}
+                className="flex-1 px-4 py-3 rounded-xl font-bold text-slate-600 hover:bg-slate-100 transition-all border border-slate-200"
+                disabled={clearingHistory}
+              >
+                Cancel
+              </button>
+              <button
+                onClick={clearSalesHistory}
+                className="flex-1 px-4 py-3 rounded-xl font-bold text-white bg-rose-600 hover:bg-rose-700 transition-all flex items-center justify-center gap-2 disabled:opacity-50"
+                disabled={clearingHistory}
+              >
+                {clearingHistory ? (
+                  <>
+                    <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                    Removing...
+                  </>
+                ) : (
+                  'Yes, Remove'
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}

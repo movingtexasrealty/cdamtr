@@ -1,0 +1,54 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    function isSignedIn() {
+      // Relaxed check to allow newly registered email users to finalize profile
+      return request.auth != null;
+    }
+
+    function isAdmin() {
+      return request.auth != null && (
+        request.auth.token.email.lower() == 'movingtexasrealty@gmail.com' ||
+        exists(/databases/$(database)/documents/admins/$(request.auth.uid)) ||
+        (exists(/databases/$(database)/documents/users/$(request.auth.uid)) && 
+         get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin')
+      );
+    }
+
+    match /admins/{uid} {
+      allow read: if isSignedIn();
+    }
+
+    match /users/{userId} {
+      allow get: if isSignedIn() && (request.auth.uid == userId || isAdmin());
+      allow list: if isSignedIn();
+      
+      // Allow profile creation for self
+      allow create: if isSignedIn() && (request.auth.uid == userId || isAdmin());
+      allow update: if isSignedIn() && (request.auth.uid == userId || isAdmin());
+      
+      // Allow agents to delete pre-auth "ghost" documents that match their email
+      allow delete: if isAdmin() || (isSignedIn() && resource.data.email == request.auth.token.email);
+    }
+
+    match /cdaRequests/{requestId} {
+      allow list: if isSignedIn() && (resource.data.agentId == request.auth.uid || isAdmin());
+      allow get: if isSignedIn() && (resource.data.agentId == request.auth.uid || isAdmin());
+      allow create: if isSignedIn() && request.resource.data.agentId == request.auth.uid;
+      allow update: if isSignedIn() && (
+        (request.auth.uid == resource.data.agentId && (resource.data.status == 'pending' || resource.data.status == 'rejected')) ||
+        isAdmin()
+      );
+      allow delete: if isAdmin();
+    }
+
+    match /salesHistory/{recordId} {
+      allow read: if isSignedIn();
+      allow write: if isAdmin();
+    }
+  }
+}
