@@ -29,7 +29,7 @@ import {
   Area,
   Legend
 } from 'recharts';
-import { matchLicense, normalizeDate } from '../lib/capCalculator';
+import { matchLicense, normalizeDate, recalculateAndPersistCDACaps } from '../lib/capCalculator';
 
 export default function Dashboard() {
   const { profile, isAdmin } = useAuth();
@@ -48,18 +48,54 @@ export default function Dashboard() {
   useEffect(() => {
     if (!profile) return;
 
+    // Auto recalculate caps and persist to ensure approved CDAs are properly capped
+    recalculateAndPersistCDACaps();
+
     let cdaList: any[] = [];
     let salesList: any[] = [];
     let usersList: any[] = [];
 
     const computeAll = () => {
+      // Find all user IDs, licenses, emails, names associated with current agent profile
+      const matchingUserDocs = usersList.filter((u: any) => {
+        if (!profile) return false;
+        if (profile.uid && (u.uid === profile.uid || u.id === profile.uid)) return true;
+        if (profile.licenseNumber && matchLicense(profile.licenseNumber, u.licenseNumber)) return true;
+        if (profile.email && u.email && u.email.toLowerCase() === profile.email.toLowerCase()) return true;
+        if (profile.name && u.name && u.name.trim().toLowerCase() === profile.name.trim().toLowerCase()) return true;
+        return false;
+      });
+
+      const matchedUids = new Set<string>();
+      if (profile?.uid) matchedUids.add(profile.uid);
+      matchingUserDocs.forEach((u: any) => {
+        if (u.id) matchedUids.add(u.id);
+        if (u.uid) matchedUids.add(u.uid);
+      });
+
       const isAgentMatch = (r: any) => {
         if (isAdmin) return true;
-        const matchUid = profile?.uid && (r.agentId === profile.uid || r.id === profile.uid);
-        const matchLic = profile?.licenseNumber && matchLicense(profile.licenseNumber, r.licenseNumber || r.agentLicense);
-        const matchEmail = profile?.email && r.agentEmail && r.agentEmail.trim().toLowerCase() === profile.email.toLowerCase();
-        const matchName = profile?.name && r.agentName && r.agentName.trim().toLowerCase() === profile.name.trim().toLowerCase();
-        return !!(matchUid || matchLic || matchEmail || matchName);
+        
+        // Match by UID / Preauth ID
+        if (r.agentId && matchedUids.has(r.agentId)) return true;
+        if (r.id && matchedUids.has(r.id)) return true;
+
+        // Match by License Number
+        const reqLic = r.licenseNumber || r.agentLicense || '';
+        if (profile?.licenseNumber && matchLicense(profile.licenseNumber, reqLic)) return true;
+        if (matchingUserDocs.some((u: any) => u.licenseNumber && matchLicense(u.licenseNumber, reqLic))) return true;
+
+        // Match by Email
+        const reqEmail = (r.agentEmail || '').trim().toLowerCase();
+        if (profile?.email && reqEmail && reqEmail === profile.email.trim().toLowerCase()) return true;
+        if (matchingUserDocs.some((u: any) => u.email && u.email.trim().toLowerCase() === reqEmail)) return true;
+
+        // Match by Name
+        const reqName = (r.agentName || '').trim().toLowerCase();
+        if (profile?.name && reqName && reqName === profile.name.trim().toLowerCase()) return true;
+        if (matchingUserDocs.some((u: any) => u.name && u.name.trim().toLowerCase() === reqName)) return true;
+
+        return false;
       };
 
       const userCDAs = cdaList.filter(isAgentMatch);
@@ -71,7 +107,12 @@ export default function Dashboard() {
         const matchLic = profile?.licenseNumber && matchLicense(profile.licenseNumber, lic);
         const matchEmail = profile?.email && lic.toLowerCase() === profile.email.toLowerCase();
         const matchName = profile?.name && lic.toLowerCase() === profile.name.trim().toLowerCase();
-        return !!(matchUid || matchLic || matchEmail || matchName);
+        const matchUserDoc = matchingUserDocs.some((u: any) => 
+          (u.licenseNumber && matchLicense(u.licenseNumber, lic)) ||
+          (u.email && u.email.toLowerCase() === lic.toLowerCase()) ||
+          (u.name && u.name.trim().toLowerCase() === lic.toLowerCase())
+        );
+        return !!(matchUid || matchLic || matchEmail || matchName || matchUserDoc);
       });
 
       setRecentRequests(userCDAs.slice(0, 5));
