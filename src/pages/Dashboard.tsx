@@ -13,7 +13,8 @@ import {
   FileCheck, 
   Clock,
   ArrowRight,
-  Plus
+  Plus,
+  ChevronDown
 } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { 
@@ -28,9 +29,11 @@ import {
   Area,
   Legend
 } from 'recharts';
+import { matchLicense, normalizeDate } from '../lib/capCalculator';
 
 export default function Dashboard() {
   const { profile, isAdmin } = useAuth();
+  const [selectedYear, setSelectedYear] = useState<string>('2026');
   const [stats, setStats] = useState({
     ytdVolume: 0,
     ytdCommission: 0,
@@ -45,19 +48,16 @@ export default function Dashboard() {
   useEffect(() => {
     if (!profile) return;
 
-    // Fetch requests
-    const requestsRef = collection(db, 'cdaRequests');
-    const q = isAdmin 
-      ? query(requestsRef) 
-      : query(requestsRef, where('agentId', '==', profile.uid));
+    let cdaList: any[] = [];
+    let salesList: any[] = [];
+    let usersList: any[] = [];
 
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      const requests = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-      setRecentRequests(requests.slice(0, 5));
-      
-      const active = requests.filter((r: any) => r.status === 'pending').length;
-      const completed = requests.filter((r: any) => r.status === 'approved').length;
-      
+    const computeAll = () => {
+      setRecentRequests(cdaList.slice(0, 5));
+
+      const active = cdaList.filter((r: any) => r.status === 'pending').length;
+      const completed = cdaList.filter((r: any) => r.status === 'approved').length + salesList.length;
+
       let sumCommission = 0;
       let sumSplit = 0;
       let sumVolume = 0;
@@ -68,44 +68,97 @@ export default function Dashboard() {
       const currentYear = now.getFullYear();
 
       const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-      const monthlyValues = months.map(name => ({ name, approved: 0, pending: 0 }));
+      const monthlyValues = months.map(name => ({ name, approved: 0, pending: 0, volume: 0 }));
 
-      requests.forEach((r: any) => {
-        const dateStr = r.closingDate || r.createdAt;
-        let monthIdx = -1;
-        if (dateStr) {
-          let date;
-          if (typeof dateStr === 'string' && dateStr.includes('-') && !dateStr.includes('T')) {
-            const parts = dateStr.split('-');
-            if (parts.length === 3) {
-              date = new Date(parseInt(parts[0], 10), parseInt(parts[1], 10) - 1, parseInt(parts[2], 10));
-            } else {
-              date = new Date(dateStr);
-            }
-          } else {
-            date = new Date(dateStr);
-          }
+      // Process CDA Requests
+      cdaList.forEach((r: any) => {
+        if (!isAdmin && r.agentId !== profile.uid) return;
 
-          if (date.getFullYear() === currentYear) {
-            monthIdx = date.getMonth();
-          }
-        }
+        const dateStr = normalizeDate(r.closingDate || r.createdAt);
+        const dateObj = new Date(dateStr + 'T00:00:00');
+        const rYear = dateObj.getFullYear();
+        const rMonth = dateObj.getMonth();
+
+        const price = Number(r.salePrice) || 0;
+        const grossComm = Number(r.grossCommission) || 0;
+        const companySplit = Number(r.companySplitAmount || r.brokerSplitAmount) || 0;
+        const agentEarnings = Number(r.agentGrossAmount) || (grossComm - companySplit);
 
         if (r.status === 'approved') {
-          sumCommission += r.agentGrossAmount || 0;
-          sumSplit += r.companySplitAmount || r.brokerSplitAmount || 0;
-          sumVolume += r.salePrice || 0;
+          sumVolume += price;
+          sumCommission += agentEarnings;
+          sumSplit += companySplit;
 
-          if (monthIdx !== -1) {
-            monthlyValues[monthIdx].approved += r.agentGrossAmount || 0;
-
-            if (monthIdx === currentMonth) {
-              monthlyComm += r.agentGrossAmount || 0;
+          if (selectedYear === 'All Time' || rYear.toString() === selectedYear) {
+            if (rMonth >= 0 && rMonth < 12) {
+              monthlyValues[rMonth].approved += agentEarnings;
+              monthlyValues[rMonth].volume += price;
+            }
+            if (rYear === currentYear && rMonth === currentMonth) {
+              monthlyComm += agentEarnings;
             }
           }
         } else if (r.status === 'pending') {
-          if (monthIdx !== -1) {
-            monthlyValues[monthIdx].pending += r.agentGrossAmount || 0;
+          if (selectedYear === 'All Time' || rYear.toString() === selectedYear) {
+            if (rMonth >= 0 && rMonth < 12) {
+              monthlyValues[rMonth].pending += agentEarnings;
+            }
+          }
+        }
+      });
+
+      // Process Imported Sales History
+      salesList.forEach((sh: any) => {
+        const lic = String(sh.license || '').trim();
+
+        // Check ownership if non-admin agent
+        if (!isAdmin) {
+          const matchUid = profile.uid && sh.agentId === profile.uid;
+          const matchLic = profile.licenseNumber && matchLicense(profile.licenseNumber, lic);
+          const matchEmail = profile.email && lic.toLowerCase() === profile.email.toLowerCase();
+          const matchName = profile.name && lic.toLowerCase() === profile.name.trim().toLowerCase();
+          if (!matchUid && !matchLic && !matchEmail && !matchName) return;
+        }
+
+        const dateStr = normalizeDate(sh.date);
+        const dateObj = new Date(dateStr + 'T00:00:00');
+        const shYear = dateObj.getFullYear();
+        const shMonth = dateObj.getMonth();
+
+        // Find matching agent profile for split percentage calculation
+        const agent = usersList.find((a: any) => 
+          matchLicense(a.licenseNumber, lic) ||
+          (a.email && a.email.toLowerCase() === lic.toLowerCase()) ||
+          (a.name && a.name.trim().toLowerCase() === lic.toLowerCase())
+        );
+
+        const brokerSplitPct = agent?.commissionProfile?.brokerSplit !== undefined
+          ? agent.commissionProfile.brokerSplit
+          : 20;
+
+        const price = Number(sh.price) || 0;
+        const rate = Number(sh.rate) || 0;
+        const grossComm = sh.grossCommission !== undefined 
+          ? Number(sh.grossCommission) 
+          : price * (rate / 100);
+
+        const companySplit = sh.companySplitAmount !== undefined
+          ? Number(sh.companySplitAmount)
+          : grossComm * (brokerSplitPct / 100);
+
+        const agentEarnings = grossComm - companySplit;
+
+        sumVolume += price;
+        sumCommission += agentEarnings;
+        sumSplit += companySplit;
+
+        if (selectedYear === 'All Time' || shYear.toString() === selectedYear) {
+          if (shMonth >= 0 && shMonth < 12) {
+            monthlyValues[shMonth].approved += agentEarnings;
+            monthlyValues[shMonth].volume += price;
+          }
+          if (shYear === currentYear && shMonth === currentMonth) {
+            monthlyComm += agentEarnings;
           }
         }
       });
@@ -120,12 +173,29 @@ export default function Dashboard() {
       });
 
       setMonthlyData(monthlyValues);
-    }, (error) => {
-      handleFirestoreError(error, OperationType.GET, 'cdaRequests');
-    });
+    };
 
-    return () => unsubscribe();
-  }, [profile]);
+    const unsubCDA = onSnapshot(collection(db, 'cdaRequests'), (snapshot) => {
+      cdaList = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      computeAll();
+    }, (err) => handleFirestoreError(err, OperationType.GET, 'cdaRequests'));
+
+    const unsubSH = onSnapshot(collection(db, 'salesHistory'), (snapshot) => {
+      salesList = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      computeAll();
+    }, (err) => handleFirestoreError(err, OperationType.GET, 'salesHistory'));
+
+    const unsubUsers = onSnapshot(collection(db, 'users'), (snapshot) => {
+      usersList = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      computeAll();
+    }, (err) => handleFirestoreError(err, OperationType.GET, 'users'));
+
+    return () => {
+      unsubCDA();
+      unsubSH();
+      unsubUsers();
+    };
+  }, [profile, isAdmin, selectedYear]);
 
   return (
     <div className="space-y-8">
@@ -152,21 +222,21 @@ export default function Dashboard() {
               icon={TrendingUp} 
               label="Cumulative Sales Volume" 
               value={`$${stats.ytdVolume.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`} 
-              subLabel="YTD approved production"
+              subLabel="CDAs + imported sales history"
               color="blue"
             />
             <StatCard 
               icon={DollarSign} 
               label="Cumulative Agent Earnings" 
               value={`$${stats.ytdCommission.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`} 
-              subLabel="YTD agent distributions"
+              subLabel="Total agent distributions"
               color="green"
             />
             <StatCard 
               icon={FileCheck} 
               label="Company Splits Collected" 
               value={`$${stats.splitContribution.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`} 
-              subLabel="YTD brokerage splits"
+              subLabel="Brokerage split earnings"
               color="orange"
             />
             <StatCard 
@@ -181,9 +251,9 @@ export default function Dashboard() {
           <>
             <StatCard 
               icon={TrendingUp} 
-              label="YTD Volume" 
+              label="Total Sales Volume" 
               value={`$${stats.ytdVolume.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`} 
-              subLabel="Approved sale/lease volumes"
+              subLabel="Approved sale & imported volume"
               color="blue"
             />
             <StatCard 
@@ -195,13 +265,13 @@ export default function Dashboard() {
             />
             <StatCard 
               icon={FileCheck} 
-              label="YTD Cap Remaining" 
+              label="Cap Remaining" 
               value={profile?.commissionProfile?.isInexperienced 
                 ? "Exempt" 
                 : `$${Math.max(0, (profile?.commissionProfile?.capAmount !== undefined ? profile.commissionProfile.capAmount : 15000) - stats.splitContribution).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`} 
               subLabel={profile?.commissionProfile?.isInexperienced 
                 ? "Inexperienced status exempts capping limits"
-                : `Paid YTD: $${stats.splitContribution.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} of $${(profile?.commissionProfile?.capAmount !== undefined ? profile.commissionProfile.capAmount : 15000).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} cap`}
+                : `Paid: $${stats.splitContribution.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} of $${(profile?.commissionProfile?.capAmount !== undefined ? profile.commissionProfile.capAmount : 15000).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} cap`}
               color="orange"
             />
             <StatCard 
@@ -218,7 +288,24 @@ export default function Dashboard() {
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
         {/* Chart Column */}
         <div className="lg:col-span-2 bg-white p-6 rounded-2xl border border-slate-200 shadow-sm">
-          <h3 className="text-lg font-bold text-slate-800 mb-6">Production Overview</h3>
+          <div className="flex items-center justify-between mb-6">
+            <div>
+              <h3 className="text-lg font-bold text-slate-800">Production Overview</h3>
+              <p className="text-xs text-slate-500">Includes approved CDA requests & imported sales history</p>
+            </div>
+            <div className="relative">
+              <select
+                value={selectedYear}
+                onChange={e => setSelectedYear(e.target.value)}
+                className="appearance-none bg-slate-50 border border-slate-200 text-slate-700 py-1.5 pl-3 pr-8 rounded-lg text-xs font-semibold focus:outline-none focus:ring-2 focus:ring-blue-500"
+              >
+                <option value="2026">2026 Production</option>
+                <option value="2025">2025 Production</option>
+                <option value="All Time">All Time</option>
+              </select>
+              <ChevronDown size={14} className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
+            </div>
+          </div>
           <div className="h-[300px] w-full">
             <ResponsiveContainer width="100%" height="100%">
               <AreaChart data={monthlyData}>
@@ -315,3 +402,4 @@ function StatCard({ icon: Icon, label, value, subLabel, color }: { icon: any, la
     </div>
   );
 }
+
