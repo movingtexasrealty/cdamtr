@@ -180,7 +180,7 @@ export default function Reports() {
 
   // Insurance Renewal States
   const [activeTab, setActiveTab] = useState<'production' | 'insurance'>('production');
-  const [insurancePeriod, setInsurancePeriod] = useState<string>('2025');
+  const [insurancePeriod, setInsurancePeriod] = useState<string>('all');
   const [projectedGrowth, setProjectedGrowth] = useState<number>(5);
   const [manualEstimates, setManualEstimates] = useState<Record<string, { transactions?: number; income?: number }>>({});
 
@@ -483,16 +483,21 @@ export default function Reports() {
     const transactions: any[] = [];
 
     salesHistory.forEach((sh) => {
-      let type = 'Home Sale';
-      if (sh.type === 'Leases') type = 'Lease';
-      else if (sh.type === 'Land') type = 'Land';
+      const rawPrice = Number(sh.price) || 0;
+      const rawRate = Number(sh.rate) || 0;
+      const grossComm = sh.grossCommission !== undefined 
+        ? Number(sh.grossCommission) 
+        : rawPrice * (rawRate / 100);
+      
+      const normDate = normalizeDate(sh.date);
+      const rawType = (sh.type || 'Sales').trim();
 
       transactions.push({
-        id: sh.id,
-        date: sh.date,
-        type: type,
-        price: sh.price || 0,
-        commission: sh.price * ((sh.rate || 0) / 100),
+        id: sh.id || `sh_${Math.random()}`,
+        date: normDate,
+        type: rawType,
+        price: rawPrice,
+        commission: grossComm,
         client: 'Historical Client',
         isOwnerAgent: false,
         address: sh.address || 'Historical Sale',
@@ -502,13 +507,13 @@ export default function Reports() {
 
     cdaRequests.forEach((req) => {
       if (req.status !== 'approved') return;
-      const date = req.closingDate || req.createdAt?.split('T')[0] || new Date().toISOString().split('T')[0];
+      const normDate = normalizeDate(req.closingDate || req.createdAt);
       transactions.push({
         id: req.id,
-        date: date,
+        date: normDate,
         type: req.propertyType || 'Home Sale',
-        price: req.salePrice || 0,
-        commission: req.grossCommission || 0,
+        price: Number(req.salePrice) || 0,
+        commission: Number(req.grossCommission) || 0,
         client: req.sellerName || req.buyerName || 'Client',
         isOwnerAgent: !!req.isOwnerAgent,
         address: req.propertyAddress || 'No Address',
@@ -521,7 +526,9 @@ export default function Reports() {
 
   const getInsuranceDateRange = () => {
     const today = new Date();
-    if (insurancePeriod === '2025') {
+    if (insurancePeriod === 'all') {
+      return { start: '2000-01-01', end: '2099-12-31' };
+    } else if (insurancePeriod === '2025') {
       return { start: '2025-01-01', end: '2025-12-31' };
     } else if (insurancePeriod === '2026') {
       return { start: '2026-01-01', end: '2026-12-31' };
@@ -538,20 +545,20 @@ export default function Reports() {
   };
 
   const categories = [
-    { key: 'a', label: 'a. Residential Brokerage (1-4 units)', types: ['Home Sale'] },
-    { key: 'b', label: 'b. Commercial, Industrial, or Income Property', types: ['Commercial'] },
-    { key: 'c', label: 'c. Land and Lot', types: ['Land'] },
-    { key: 'd', label: 'd. Farm, Agriculture, Vineyard and/or Forestry', types: [] },
-    { key: 'e', label: 'e. Residential Real Estate Appraisal', types: [] },
+    { key: 'a', label: 'a. Residential Brokerage (1-4 units)', types: ['Home Sale', 'Residential', 'Sales', 'Single Family', 'Condo', 'Townhouse', 'Duplex', 'Triplex', 'Fourplex'] },
+    { key: 'b', label: 'b. Commercial, Industrial, or Income Property', types: ['Commercial', 'Industrial', 'Retail', 'Office', 'Income'] },
+    { key: 'c', label: 'c. Land and Lot', types: ['Land', 'Lot'] },
+    { key: 'd', label: 'd. Farm, Agriculture, Vineyard and/or Forestry', types: ['Farm', 'Ranch', 'Agriculture'] },
+    { key: 'e', label: 'e. Residential Real Estate Appraisal', types: ['Appraisal'] },
     { key: 'f', label: 'f. Commercial Real Estate Appraisal', types: [] },
-    { key: 'g', label: 'g. Real Estate Leasing Fees', types: ['Lease'] },
-    { key: 'h', label: 'h. Residential Property Management (1-4 Units)', types: [] },
+    { key: 'g', label: 'g. Real Estate Leasing Fees', types: ['Lease', 'Leases', 'Rental'] },
+    { key: 'h', label: 'h. Residential Property Management (1-4 Units)', types: ['Property Management'] },
     { key: 'i', label: 'i. Commercial Property Management (5+ Units)', types: [] },
     { key: 'j', label: 'j. Association Management (Condo, Co-Op, etc.)', types: [] },
     { key: 'k', label: 'k. Mortgage Brokerage/Financial Arrangements', types: [] },
     { key: 'l', label: 'l. Business Opportunities Brokerages', types: [] },
     { key: 'm', label: 'm. Real Estate Consulting/Counseling', types: [] },
-    { key: 'n', label: 'n. Other (Referral Fees)', types: ['Referral'] },
+    { key: 'n', label: 'n. Other (Referral Fees)', types: ['Referral', 'Other'] },
   ];
 
   const handleEstimateChange = (key: string, field: 'transactions' | 'income', value: string) => {
@@ -571,10 +578,25 @@ export default function Reports() {
 
   const range = getInsuranceDateRange();
   const allTx = getCombinedTransactions();
-  const pastTxList = allTx.filter(tx => tx.date >= range.start && tx.date <= range.end);
+  const pastTxList = allTx.filter(tx => {
+    const normDate = normalizeDate(tx.date);
+    return normDate >= range.start && normDate <= range.end;
+  });
 
   const calculatedRows = categories.map((cat) => {
-    const matchedTx = pastTxList.filter((tx) => cat.types.includes(tx.type));
+    const matchedTx = pastTxList.filter((tx) => {
+      const txType = (tx.type || '').trim().toLowerCase();
+      const matchesExplicit = cat.types.some(t => {
+        const catT = t.toLowerCase();
+        return txType.includes(catT) || catT.includes(txType);
+      });
+      if (matchesExplicit) return true;
+      if (cat.key === 'a' && (txType === 'sales' || txType === 'home sale' || txType === 'residential' || !txType)) {
+        return true;
+      }
+      return false;
+    });
+
     const pastCount = matchedTx.length;
     const pastIncome = matchedTx.reduce((sum, tx) => sum + (tx.commission || 0), 0);
 
@@ -637,7 +659,10 @@ export default function Reports() {
   const dualTxCount = Object.values(addressCounts).filter(count => count >= 2).length;
   const dualAgencyPercentage = totalPastCount > 0 ? (dualTxCount / totalPastCount) * 100 : 0;
 
-  const soldTx = pastTxList.filter(tx => tx.type === 'Home Sale' || tx.type === 'Land' || tx.type === 'Commercial');
+  const soldTx = pastTxList.filter(tx => {
+    const t = (tx.type || '').toLowerCase();
+    return !t.includes('lease') && !t.includes('rental');
+  });
   const totalSoldPrice = soldTx.reduce((sum, tx) => sum + tx.price, 0);
   const avgPropertyValue = soldTx.length > 0 ? totalSoldPrice / soldTx.length : 0;
 
@@ -950,8 +975,9 @@ export default function Reports() {
                   value={insurancePeriod}
                   onChange={e => setInsurancePeriod(e.target.value)}
                 >
-                  <option value="2025">Calendar Year 2025</option>
+                  <option value="all">All Time ({allTx.length} Records)</option>
                   <option value="2026">Calendar Year 2026 (YTD)</option>
+                  <option value="2025">Calendar Year 2025</option>
                   <option value="last12">Last 12 Months (Trailing)</option>
                 </select>
                 <ChevronDown size={16} className="absolute right-3.5 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
