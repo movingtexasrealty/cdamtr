@@ -31,9 +31,9 @@ export default function AdminAgents() {
     email: '',
     phone: '',
     licenseNumber: '',
-    agentSplit: undefined as number | undefined,
-    brokerSplit: undefined as number | undefined,
-    capAmount: undefined as number | undefined,
+    agentSplit: 80 as number | undefined,
+    brokerSplit: 20 as number | undefined,
+    capAmount: 15000 as number | undefined,
     isInexperienced: false
   });
 
@@ -149,7 +149,19 @@ export default function AdminAgents() {
           <p className="text-slate-500 font-medium">Control which agents are authorized to access the system.</p>
         </div>
         <button 
-          onClick={() => setShowAddModal(true)}
+          onClick={() => {
+            setNewAgent({
+              name: '',
+              email: '',
+              phone: '',
+              licenseNumber: '',
+              agentSplit: 80,
+              brokerSplit: 20,
+              capAmount: 15000,
+              isInexperienced: false
+            });
+            setShowAddModal(true);
+          }}
           className="bg-blue-600 text-white px-6 py-3 rounded-2xl font-black flex items-center gap-2 hover:bg-blue-700 transition-all hover:scale-105 active:scale-95 shadow-lg shadow-blue-200"
         >
           <Plus size={20} />
@@ -249,6 +261,30 @@ export default function AdminAgents() {
                   </div>
                 </div>
 
+                {!newAgent.isInexperienced ? (
+                  <div>
+                    <label className="block text-xs font-black text-slate-400 uppercase mb-2 tracking-widest">Yearly Cap Amount ($)</label>
+                    <input 
+                      required={!newAgent.isInexperienced}
+                      type="number"
+                      min="0"
+                      step="any"
+                      placeholder="e.g. 15000 (or 0 if no cap)"
+                      className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-sm outline-none font-bold focus:ring-2 focus:ring-blue-500 text-slate-900"
+                      value={newAgent.capAmount !== undefined ? newAgent.capAmount : ''}
+                      onChange={e => setNewAgent({
+                        ...newAgent, 
+                        capAmount: e.target.value === '' ? undefined : parseFloat(e.target.value)
+                      })}
+                    />
+                    <p className="text-[10px] text-slate-400 mt-1 font-medium">Standard cap is $15,000 per year. Enter 0 if agent has no cap.</p>
+                  </div>
+                ) : (
+                  <div className="py-3 px-4 bg-slate-100 border border-slate-200 rounded-xl text-xs font-bold text-slate-500 italic">
+                    Yearly Cap: Exempt (No Cap for Mentorship Program)
+                  </div>
+                )}
+
                 <div className="flex items-start gap-3 p-4 bg-slate-50 border border-slate-200 rounded-2xl">
                   <input
                     type="checkbox"
@@ -260,9 +296,9 @@ export default function AdminAgents() {
                       setNewAgent({
                         ...newAgent,
                         isInexperienced: isInexp,
-                        agentSplit: isInexp ? 70 : undefined,
-                        brokerSplit: isInexp ? 20 : undefined,
-                        capAmount: isInexp ? 0 : undefined
+                        agentSplit: isInexp ? 70 : 80,
+                        brokerSplit: isInexp ? 20 : 20,
+                        capAmount: isInexp ? 0 : 15000
                       });
                     }}
                   />
