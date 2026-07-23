@@ -63,6 +63,21 @@
         "price": { "type": "number" },
         "rate": { "type": "number" }
       }
+    },
+    "AppNotification": {
+      "title": "Notification",
+      "description": "System and request status notifications.",
+      "type": "object",
+      "properties": {
+        "title": { "type": "string" },
+        "message": { "type": "string" },
+        "requestId": { "type": "string" },
+        "agentName": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "readBy": { "type": "array", "items": { "type": "string" } },
+        "recipientRole": { "type": "string", "enum": ["admin", "all"] },
+        "type": { "type": "string" }
+      }
     }
   },
   "firestore": {
@@ -77,6 +92,10 @@
     "salesHistory": {
       "schema": "SaleRecord",
       "description": "Imported historical sales data for production tracking."
+    },
+    "notifications": {
+      "schema": "AppNotification",
+      "description": "System alerts and CDA status notifications."
     }
   }
 }

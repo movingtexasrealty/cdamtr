@@ -8,6 +8,7 @@ import { useAuth } from '../AuthContext';
 import { db, handleFirestoreError, OperationType } from '../firebase';
 import { collection, addDoc, serverTimestamp, query, where, onSnapshot, doc, getDoc, updateDoc } from 'firebase/firestore';
 import { useNavigate, useParams } from 'react-router-dom';
+import { sendAdminNotificationEmail } from '../lib/emailService';
 import { 
   Building2, 
   DollarSign, 
@@ -432,11 +433,42 @@ export default function CreateRequest() {
       });
 
       console.log('Submitting CDA request to Firestore:', cleanRequestData);
+      let docId = id;
       if (id) {
         await updateDoc(doc(db, 'cdaRequests', id), cleanRequestData);
       } else {
-        await addDoc(collection(db, 'cdaRequests'), cleanRequestData);
+        const docRef = await addDoc(collection(db, 'cdaRequests'), cleanRequestData);
+        docId = docRef.id;
       }
+
+      // Write notification for admins and trigger EmailJS if enabled
+      try {
+        const notifTitle = id ? 'CDA Request Resubmitted' : 'New CDA Request Submitted';
+        const notifMsg = `${profile.name} ${id ? 'updated and resubmitted' : 'submitted a new'} CDA request for ${formData.propertyAddress || 'a property transaction'} (${formData.propertyType || 'Transaction'}).`;
+
+        await addDoc(collection(db, 'notifications'), {
+          title: notifTitle,
+          message: notifMsg,
+          requestId: docId,
+          agentName: profile.name,
+          createdAt: new Date().toISOString(),
+          readBy: [],
+          recipientRole: 'admin',
+          type: 'new_request'
+        });
+
+        // Send EmailJS notification
+        sendAdminNotificationEmail({
+          title: notifTitle,
+          agentName: profile.name,
+          propertyAddress: formData.propertyAddress || 'N/A',
+          message: notifMsg,
+          requestId: docId
+        }).catch((err) => console.error('EmailJS background send error:', err));
+      } catch (nErr) {
+        console.error('Failed to dispatch notification:', nErr);
+      }
+
       navigate('/requests');
     } catch (err: any) {
       console.error('CDA Request Submission Error:', err);

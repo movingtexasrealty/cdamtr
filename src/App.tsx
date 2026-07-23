@@ -25,6 +25,7 @@ import CreateRequest from './pages/CreateRequest';
 import AdminAgents from './pages/AdminAgents';
 import Reports from './pages/Reports';
 import Login from './pages/Login';
+import NotificationBell from './components/NotificationBell';
 
 function ProtectedRoute({ children, adminOnly = false }: { children: React.ReactNode, adminOnly?: boolean }) {
   const { user, profile, isAdmin, loading } = useAuth();
@@ -195,6 +196,9 @@ function MainLayout({ children }: { children: React.ReactNode }) {
               {location.pathname === '/agents' && 'Roster Management'}
               {location.pathname === '/reports' && 'Production Analytics'}
             </h2>
+          </div>
+          <div className="flex items-center gap-3">
+            <NotificationBell />
           </div>
         </header>
 

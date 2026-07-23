@@ -13,7 +13,8 @@ import {
   onSnapshot, 
   deleteDoc, 
   doc, 
-  updateDoc 
+  updateDoc,
+  addDoc
 } from 'firebase/firestore';
 import { 
   Search, 
@@ -70,6 +71,23 @@ export default function Requests() {
         approvedAt: status === 'approved' ? new Date().toISOString() : null,
         ...additionalData
       });
+
+      if (status === 'approved') {
+        const targetReq = requests.find(r => r.id === id);
+        try {
+          await addDoc(collection(db, 'notifications'), {
+            title: 'CDA Request Approved',
+            message: `The CDA request for ${targetReq?.propertyAddress || 'your transaction'} has been approved by the Broker.`,
+            requestId: id,
+            createdAt: new Date().toISOString(),
+            readBy: [],
+            recipientRole: 'all',
+            type: 'approval'
+          });
+        } catch (nErr) {
+          console.error('Failed to dispatch approval notification:', nErr);
+        }
+      }
     } catch (error) {
       handleFirestoreError(error, OperationType.UPDATE, 'cdaRequests');
     }
@@ -89,6 +107,21 @@ export default function Requests() {
         rejectionReason: rejectionReason.trim(),
         rejectedAt: new Date().toISOString()
       });
+
+      try {
+        await addDoc(collection(db, 'notifications'), {
+          title: 'CDA Request Returned for Revision',
+          message: `Your CDA request for ${rejectingRequest.propertyAddress || 'the transaction'} was returned for revision. Note: ${rejectionReason.trim() || 'Please check details.'}`,
+          requestId: rejectingRequest.id,
+          createdAt: new Date().toISOString(),
+          readBy: [],
+          recipientRole: 'all',
+          type: 'rejection'
+        });
+      } catch (nErr) {
+        console.error('Failed to dispatch rejection notification:', nErr);
+      }
+
       setRejectingRequest(null);
       setRejectionReason('');
       setSelectedRequest(null); // Close the detail preview modal if it's open
