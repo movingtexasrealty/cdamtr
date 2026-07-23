@@ -18,6 +18,7 @@ import {
   Plus,
   Trash2
 } from 'lucide-react';
+import { recalculateAndPersistCDACaps } from '../lib/capCalculator';
 
 export default function AdminAgents() {
   const [agents, setAgents] = useState<any[]>([]);
@@ -57,6 +58,9 @@ export default function AdminAgents() {
     try {
       await updateDoc(doc(db, 'users', editingId), editForm);
       setEditingId(null);
+      setTimeout(() => {
+        recalculateAndPersistCDACaps();
+      }, 300);
     } catch (error) {
       handleFirestoreError(error, OperationType.UPDATE, 'users');
     }

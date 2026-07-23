@@ -53,10 +53,31 @@ export default function Dashboard() {
     let usersList: any[] = [];
 
     const computeAll = () => {
-      setRecentRequests(cdaList.slice(0, 5));
+      const isAgentMatch = (r: any) => {
+        if (isAdmin) return true;
+        const matchUid = profile?.uid && (r.agentId === profile.uid || r.id === profile.uid);
+        const matchLic = profile?.licenseNumber && matchLicense(profile.licenseNumber, r.licenseNumber || r.agentLicense);
+        const matchEmail = profile?.email && r.agentEmail && r.agentEmail.trim().toLowerCase() === profile.email.toLowerCase();
+        const matchName = profile?.name && r.agentName && r.agentName.trim().toLowerCase() === profile.name.trim().toLowerCase();
+        return !!(matchUid || matchLic || matchEmail || matchName);
+      };
 
-      const active = cdaList.filter((r: any) => r.status === 'pending').length;
-      const completed = cdaList.filter((r: any) => r.status === 'approved').length + salesList.length;
+      const userCDAs = cdaList.filter(isAgentMatch);
+
+      const userSales = salesList.filter((sh: any) => {
+        if (isAdmin) return true;
+        const lic = String(sh.license || '').trim();
+        const matchUid = profile?.uid && sh.agentId === profile.uid;
+        const matchLic = profile?.licenseNumber && matchLicense(profile.licenseNumber, lic);
+        const matchEmail = profile?.email && lic.toLowerCase() === profile.email.toLowerCase();
+        const matchName = profile?.name && lic.toLowerCase() === profile.name.trim().toLowerCase();
+        return !!(matchUid || matchLic || matchEmail || matchName);
+      });
+
+      setRecentRequests(userCDAs.slice(0, 5));
+
+      const active = userCDAs.filter((r: any) => r.status === 'pending').length;
+      const completed = userCDAs.filter((r: any) => r.status === 'approved').length + userSales.length;
 
       let sumCommission = 0;
       let sumSplit = 0;
@@ -71,9 +92,7 @@ export default function Dashboard() {
       const monthlyValues = months.map(name => ({ name, approved: 0, pending: 0, volume: 0 }));
 
       // Process CDA Requests
-      cdaList.forEach((r: any) => {
-        if (!isAdmin && r.agentId !== profile.uid) return;
-
+      userCDAs.forEach((r: any) => {
         const dateStr = normalizeDate(r.closingDate || r.createdAt);
         const dateObj = new Date(dateStr + 'T00:00:00');
         const rYear = dateObj.getFullYear();
@@ -81,15 +100,15 @@ export default function Dashboard() {
 
         const price = Number(r.salePrice) || 0;
         const grossComm = Number(r.grossCommission) || 0;
-        const companySplit = Number(r.companySplitAmount || r.brokerSplitAmount) || 0;
+        const companySplit = Number(r.companySplitAmount ?? r.brokerSplitAmount ?? 0);
         const agentEarnings = Number(r.agentGrossAmount) || (grossComm - companySplit);
 
         if (r.status === 'approved') {
-          sumVolume += price;
-          sumCommission += agentEarnings;
-          sumSplit += companySplit;
-
           if (selectedYear === 'All Time' || rYear.toString() === selectedYear) {
+            sumVolume += price;
+            sumCommission += agentEarnings;
+            sumSplit += companySplit;
+
             if (rMonth >= 0 && rMonth < 12) {
               monthlyValues[rMonth].approved += agentEarnings;
               monthlyValues[rMonth].volume += price;
@@ -108,24 +127,13 @@ export default function Dashboard() {
       });
 
       // Process Imported Sales History
-      salesList.forEach((sh: any) => {
-        const lic = String(sh.license || '').trim();
-
-        // Check ownership if non-admin agent
-        if (!isAdmin) {
-          const matchUid = profile.uid && sh.agentId === profile.uid;
-          const matchLic = profile.licenseNumber && matchLicense(profile.licenseNumber, lic);
-          const matchEmail = profile.email && lic.toLowerCase() === profile.email.toLowerCase();
-          const matchName = profile.name && lic.toLowerCase() === profile.name.trim().toLowerCase();
-          if (!matchUid && !matchLic && !matchEmail && !matchName) return;
-        }
-
+      userSales.forEach((sh: any) => {
         const dateStr = normalizeDate(sh.date);
         const dateObj = new Date(dateStr + 'T00:00:00');
         const shYear = dateObj.getFullYear();
         const shMonth = dateObj.getMonth();
 
-        // Find matching agent profile for split percentage calculation
+        const lic = String(sh.license || '').trim();
         const agent = usersList.find((a: any) => 
           matchLicense(a.licenseNumber, lic) ||
           (a.email && a.email.toLowerCase() === lic.toLowerCase()) ||
@@ -148,11 +156,11 @@ export default function Dashboard() {
 
         const agentEarnings = grossComm - companySplit;
 
-        sumVolume += price;
-        sumCommission += agentEarnings;
-        sumSplit += companySplit;
-
         if (selectedYear === 'All Time' || shYear.toString() === selectedYear) {
+          sumVolume += price;
+          sumCommission += agentEarnings;
+          sumSplit += companySplit;
+
           if (shMonth >= 0 && shMonth < 12) {
             monthlyValues[shMonth].approved += agentEarnings;
             monthlyValues[shMonth].volume += price;

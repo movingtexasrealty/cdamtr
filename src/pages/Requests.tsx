@@ -33,6 +33,7 @@ import {
 } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import CDAPreview from '../components/CDAPreview';
+import { matchLicense, calculateCDASplit, recalculateAndPersistCDACaps } from '../lib/capCalculator';
 
 export default function Requests() {
   const { profile } = useAuth();
@@ -50,6 +51,9 @@ export default function Requests() {
   useEffect(() => {
     if (!profile) return;
 
+    // Run auto-resync to ensure existing approved CDAs are properly capped
+    recalculateAndPersistCDACaps();
+
     const requestsRef = collection(db, 'cdaRequests');
     const q = profile.role === 'admin' 
       ? query(requestsRef) 
@@ -66,9 +70,84 @@ export default function Requests() {
 
   const handleStatusUpdate = async (id: string, status: string, additionalData?: any) => {
     try {
+      let calcUpdates = {};
+
+      if (status === 'approved') {
+        const targetReq = requests.find(r => r.id === id);
+        if (targetReq) {
+          const { getDocs, collection } = await import('firebase/firestore');
+          const usersSnap = await getDocs(collection(db, 'users'));
+          const salesSnap = await getDocs(collection(db, 'salesHistory'));
+          const cdaSnap = await getDocs(collection(db, 'cdaRequests'));
+
+          const allUsers: any[] = usersSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+          const allSales: any[] = salesSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+          const allCda: any[] = cdaSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+
+          const lic = targetReq.licenseNumber || targetReq.agentLicense || '';
+          const email = targetReq.agentEmail || '';
+          const name = targetReq.agentName || '';
+          const uid = targetReq.agentId || '';
+
+          const matchedUser = allUsers.find(u => 
+            (uid && (u.uid === uid || u.id === uid)) ||
+            (lic && matchLicense(u.licenseNumber, lic)) ||
+            (email && u.email && u.email.toLowerCase() === email.toLowerCase()) ||
+            (name && u.name && u.name.trim().toLowerCase() === name.trim().toLowerCase())
+          ) || {
+            licenseNumber: lic,
+            email,
+            name,
+            commissionProfile: { capAmount: 15000, agentSplit: 80, brokerSplit: 20 }
+          };
+
+          let ytdSplit = 0;
+          const brokerSplitPct = matchedUser.commissionProfile?.brokerSplit !== undefined
+            ? matchedUser.commissionProfile.brokerSplit
+            : 20;
+
+          allSales.forEach(sh => {
+            const shLic = String(sh.license || '').trim();
+            const matchLic = matchedUser.licenseNumber && matchLicense(matchedUser.licenseNumber, shLic);
+            const matchName = matchedUser.name && shLic.toLowerCase() === matchedUser.name.trim().toLowerCase();
+
+            if (matchLic || matchName) {
+              const price = Number(sh.price) || 0;
+              const rate = Number(sh.rate) || 0;
+              const gross = price * (rate / 100);
+              const split = sh.companySplitAmount !== undefined
+                ? Number(sh.companySplitAmount)
+                : (gross * (brokerSplitPct / 100));
+              ytdSplit += split;
+            }
+          });
+
+          allCda.forEach(r => {
+            if (r.id === id || r.status !== 'approved') return;
+            const rLic = r.licenseNumber || r.agentLicense || '';
+            const rEmail = r.agentEmail || '';
+            const rName = r.agentName || '';
+            const rUid = r.agentId || '';
+
+            const matchAgent = 
+              (matchedUser.id && (rUid === matchedUser.id || rUid === matchedUser.uid)) ||
+              (matchedUser.licenseNumber && matchLicense(matchedUser.licenseNumber, rLic)) ||
+              (matchedUser.email && rEmail && matchedUser.email.toLowerCase() === rEmail.toLowerCase()) ||
+              (matchedUser.name && rName && matchedUser.name.trim().toLowerCase() === rName.trim().toLowerCase());
+
+            if (matchAgent) {
+              ytdSplit += Number(r.brokerSplitAmount ?? r.companySplitAmount ?? 0);
+            }
+          });
+
+          calcUpdates = calculateCDASplit(targetReq, matchedUser, ytdSplit);
+        }
+      }
+
       await updateDoc(doc(db, 'cdaRequests', id), { 
         status, 
         approvedAt: status === 'approved' ? new Date().toISOString() : null,
+        ...calcUpdates,
         ...additionalData
       });
 
@@ -87,6 +166,10 @@ export default function Requests() {
         } catch (nErr) {
           console.error('Failed to dispatch approval notification:', nErr);
         }
+
+        setTimeout(() => {
+          recalculateAndPersistCDACaps();
+        }, 300);
       }
     } catch (error) {
       handleFirestoreError(error, OperationType.UPDATE, 'cdaRequests');
