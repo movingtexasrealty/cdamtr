@@ -9,6 +9,7 @@ import { db, handleFirestoreError, OperationType } from '../firebase';
 import { collection, addDoc, serverTimestamp, query, where, onSnapshot, doc, getDoc, updateDoc } from 'firebase/firestore';
 import { useNavigate, useParams } from 'react-router-dom';
 import { sendAdminNotificationEmail } from '../lib/emailService';
+import { calculateAgentCapFromData } from '../lib/capCalculator';
 import { 
   Building2, 
   DollarSign, 
@@ -145,26 +146,39 @@ export default function CreateRequest() {
   }, [id, profile]);
 
   useEffect(() => {
-    if (!profile?.uid) return;
+    if (!profile) return;
 
-    const q = query(
+    let cdaList: any[] = [];
+    let salesList: any[] = [];
+
+    const updateCapTotal = () => {
+      const capInfo = calculateAgentCapFromData(profile, cdaList, salesList);
+      setYtdSplitPaid(capInfo.companySplitPaid);
+    };
+
+    const qCDA = query(
       collection(db, 'cdaRequests'),
-      where('agentId', '==', profile.uid),
       where('status', '==', 'approved')
     );
 
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      let total = 0;
-      snapshot.docs.forEach((doc) => {
-        const data = doc.data();
-        total += data.companySplitAmount || data.brokerSplitAmount || 0;
-      });
-      setYtdSplitPaid(total);
+    const unsubCDA = onSnapshot(qCDA, (snapshot) => {
+      cdaList = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      updateCapTotal();
     }, (err) => {
-      console.error('Error fetching agent YTD production for capping calculation:', err);
+      console.error('Error fetching agent CDA production for capping:', err);
     });
 
-    return () => unsubscribe();
+    const unsubSales = onSnapshot(collection(db, 'salesHistory'), (snapshot) => {
+      salesList = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      updateCapTotal();
+    }, (err) => {
+      console.error('Error fetching sales history for capping:', err);
+    });
+
+    return () => {
+      unsubCDA();
+      unsubSales();
+    };
   }, [profile]);
 
   useEffect(() => {

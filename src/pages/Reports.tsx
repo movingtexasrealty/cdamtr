@@ -171,9 +171,10 @@ export default function Reports() {
   const [selectedAgent, setSelectedAgent] = useState<any | null>(null);
   const [selectedType, setSelectedType] = useState<string>('All');
   const [dateRange, setDateRange] = useState({ 
-    start: '2025-01-01', 
-    end: new Date().toISOString().split('T')[0] 
+    start: '2000-01-01', 
+    end: '2099-12-31' 
   });
+  const [datePreset, setDatePreset] = useState<'all' | '2026' | '2025' | 'last12' | 'custom'>('all');
 
   // Insurance Renewal States
   const [activeTab, setActiveTab] = useState<'production' | 'insurance'>('production');
@@ -291,38 +292,156 @@ export default function Reports() {
     }
   };
 
-  const uniqueTypes = ['All', ...Array.from(new Set(salesHistory.map(s => s.type).filter(Boolean)))];
+  const getCombinedProductionTransactions = () => {
+    const list: any[] = [];
 
-  const filteredHistory = salesHistory.filter(s => {
+    // 1. Historical imported sales
+    salesHistory.forEach((sh) => {
+      const lic = String(sh.license || '').trim();
+      const price = sh.price || 0;
+      const rate = sh.rate || 0;
+      const grossComm = price * (rate / 100);
+
+      // Find matching agent profile for commission split
+      const agent = agents.find(a => 
+        (a.licenseNumber && String(a.licenseNumber).trim().toLowerCase() === lic.toLowerCase()) ||
+        (a.email && a.email.toLowerCase() === lic.toLowerCase()) ||
+        (a.name && a.name.trim().toLowerCase() === lic.toLowerCase())
+      );
+
+      const brokerSplitPct = agent?.commissionProfile?.brokerSplit !== undefined
+        ? agent.commissionProfile.brokerSplit
+        : 20;
+
+      const companySplit = sh.companySplitAmount !== undefined
+        ? sh.companySplitAmount
+        : (grossComm * (brokerSplitPct / 100));
+
+      list.push({
+        id: sh.id || `sh_${Math.random()}`,
+        source: 'salesHistory',
+        date: sh.date || '2025-01-01',
+        license: lic,
+        type: sh.type || 'Sales',
+        price: price,
+        rate: rate,
+        grossCommission: grossComm,
+        companySplitPaid: companySplit,
+        agentName: agent?.name || (lic && lic !== 'UNKNOWN' ? `License: ${lic}` : 'Unassigned Agent'),
+        agentId: agent?.id || lic || 'Unknown',
+        agentObj: agent
+      });
+    });
+
+    // 2. Approved CDA Requests
+    cdaRequests.forEach((req) => {
+      if (req.status !== 'approved') return;
+
+      const date = req.closingDate || (req.createdAt ? req.createdAt.split('T')[0] : '2026-01-01');
+      const lic = req.licenseNumber || req.agentName || 'CDA Agent';
+      const price = req.salePrice || 0;
+      const grossComm = req.grossCommission || 0;
+      const companySplit = req.companySplitAmount || req.brokerSplitAmount || 0;
+
+      const agent = agents.find(a => 
+        a.id === req.agentId || 
+        (a.licenseNumber && String(a.licenseNumber).trim().toLowerCase() === String(lic).trim().toLowerCase())
+      );
+
+      list.push({
+        id: req.id,
+        source: 'cdaRequest',
+        date: date,
+        license: lic,
+        type: req.propertyType || 'Home Sale',
+        price: price,
+        rate: req.commissionRate || (price > 0 ? Number(((grossComm / price) * 100).toFixed(2)) : 3),
+        grossCommission: grossComm,
+        companySplitPaid: companySplit,
+        agentName: agent?.name || req.agentName || `License: ${lic}`,
+        agentId: agent?.id || req.agentId || lic,
+        address: req.propertyAddress || 'CDA Request',
+        agentObj: agent
+      });
+    });
+
+    return list;
+  };
+
+  const allProductionTx = getCombinedProductionTransactions();
+
+  const uniqueTypes = ['All', ...Array.from(new Set(allProductionTx.map(s => s.type).filter(Boolean)))];
+
+  const filteredHistory = allProductionTx.filter(s => {
     const matchDate = s.date >= dateRange.start && s.date <= dateRange.end;
     const matchType = selectedType === 'All' || s.type === selectedType;
     return matchDate && matchType;
   });
 
-  const agentProduction = filteredHistory.reduce((acc: any, curr: any) => {
-    const license = curr.license;
-    if (!acc[license]) {
-      const agent = agents.find(a => a.licenseNumber === license);
-      acc[license] = { 
-        name: agent?.name || `License: ${license}`, 
-        volume: 0, 
-        count: 0, 
-        commission: 0,
-        license: license
+  const agentProductionMap: Record<string, any> = {};
+
+  filteredHistory.forEach(curr => {
+    const key = curr.agentId || curr.license || 'Unknown';
+    if (!agentProductionMap[key]) {
+      const agent = curr.agentObj || agents.find(a => a.id === key || (a.licenseNumber && String(a.licenseNumber).trim().toLowerCase() === String(curr.license).trim().toLowerCase()));
+      const capAmount = agent?.commissionProfile?.capAmount !== undefined ? agent.commissionProfile.capAmount : 15000;
+      const isInexperienced = !!agent?.commissionProfile?.isInexperienced;
+
+      agentProductionMap[key] = {
+        key,
+        name: agent?.name || curr.agentName || `License: ${curr.license}`,
+        license: agent?.licenseNumber || curr.license,
+        volume: 0,
+        count: 0,
+        grossCommission: 0,
+        brokerSplitPaid: 0,
+        capAmount,
+        isInexperienced,
+        transactions: [],
+        agentObj: agent
       };
     }
-    acc[license].volume += curr.price;
-    acc[license].count += 1;
-    acc[license].commission += (curr.price * (curr.rate / 100));
-    return acc;
-  }, {});
 
-  const chartData = Object.values(agentProduction).sort((a: any, b: any) => b.volume - a.volume);
+    agentProductionMap[key].volume += curr.price;
+    agentProductionMap[key].count += 1;
+    agentProductionMap[key].grossCommission += curr.grossCommission;
+    agentProductionMap[key].brokerSplitPaid += curr.companySplitPaid;
+    agentProductionMap[key].transactions.push(curr);
+  });
+
+  const chartData = Object.values(agentProductionMap)
+    .map((item: any) => {
+      const capPct = item.capAmount > 0 
+        ? Math.min(100, Math.round((item.brokerSplitPaid / item.capAmount) * 100))
+        : 100;
+      const isCapped = item.capAmount > 0 ? item.brokerSplitPaid >= item.capAmount : false;
+      return {
+        ...item,
+        capPct,
+        isCapped
+      };
+    })
+    .sort((a: any, b: any) => b.volume - a.volume);
+
+  const handleDatePresetChange = (preset: 'all' | '2026' | '2025' | 'last12' | 'custom') => {
+    setDatePreset(preset);
+    const today = new Date().toISOString().split('T')[0];
+    if (preset === 'all') {
+      setDateRange({ start: '2000-01-01', end: '2099-12-31' });
+    } else if (preset === '2026') {
+      setDateRange({ start: '2026-01-01', end: '2026-12-31' });
+    } else if (preset === '2025') {
+      setDateRange({ start: '2025-01-01', end: '2025-12-31' });
+    } else if (preset === 'last12') {
+      const d = new Date();
+      d.setFullYear(d.getFullYear() - 1);
+      setDateRange({ start: d.toISOString().split('T')[0], end: today });
+    }
+  };
 
   const agentTransactions = selectedAgent 
-    ? filteredHistory
-        .filter(s => s.license === selectedAgent.license)
-        .sort((a, b) => b.date.localeCompare(a.date))
+    ? (selectedAgent.transactions || [])
+        .sort((a: any, b: any) => b.date.localeCompare(a.date))
     : [];
 
   // INSURANCE HELPER FUNCTIONS
@@ -555,34 +674,85 @@ export default function Reports() {
             </div>
           </div>
 
-          <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-sm flex flex-wrap items-center gap-6 print:hidden">
-            <div className="flex items-center gap-3">
-              <Calendar size={18} className="text-slate-400 animate-pulse" />
-              <div className="flex items-center gap-2">
-                <input 
-                  type="date" 
-                  className="px-3 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-sm font-medium text-slate-700 outline-none hover:border-blue-300 focus:border-blue-500 transition-colors"
-                  value={dateRange.start}
-                  onChange={e => setDateRange({...dateRange, start: e.target.value})}
-                />
-                <span className="text-slate-400 font-medium">to</span>
-                <input 
-                  type="date" 
-                  className="px-3 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-sm font-medium text-slate-700 outline-none hover:border-blue-300 focus:border-blue-500 transition-colors"
-                  value={dateRange.end}
-                  onChange={e => setDateRange({...dateRange, end: e.target.value})}
-                />
-              </div>
+          <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-sm flex flex-wrap items-center justify-between gap-4 print:hidden">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="text-xs font-bold text-slate-400 uppercase tracking-wider mr-1">Time Period:</span>
+              <button
+                type="button"
+                onClick={() => handleDatePresetChange('all')}
+                className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all ${
+                  datePreset === 'all'
+                    ? 'bg-blue-600 text-white shadow-md shadow-blue-100'
+                    : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                }`}
+              >
+                All Time ({allProductionTx.length} Records)
+              </button>
+              <button
+                type="button"
+                onClick={() => handleDatePresetChange('2026')}
+                className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all ${
+                  datePreset === '2026'
+                    ? 'bg-blue-600 text-white shadow-md shadow-blue-100'
+                    : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                }`}
+              >
+                2026 YTD
+              </button>
+              <button
+                type="button"
+                onClick={() => handleDatePresetChange('2025')}
+                className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all ${
+                  datePreset === '2025'
+                    ? 'bg-blue-600 text-white shadow-md shadow-blue-100'
+                    : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                }`}
+              >
+                2025
+              </button>
+              <button
+                type="button"
+                onClick={() => handleDatePresetChange('last12')}
+                className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all ${
+                  datePreset === 'last12'
+                    ? 'bg-blue-600 text-white shadow-md shadow-blue-100'
+                    : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                }`}
+              >
+                Trailing 12 Mo.
+              </button>
             </div>
 
-            <div className="h-6 w-px bg-slate-200 hidden sm:block" />
-
-            <div className="flex items-center gap-3">
-              <Filter size={18} className="text-slate-400" />
+            <div className="flex items-center gap-4">
               <div className="flex items-center gap-2">
-                <span className="text-xs font-bold text-slate-400 uppercase tracking-wider">Transaction Type:</span>
+                <Calendar size={16} className="text-slate-400" />
+                <input 
+                  type="date" 
+                  className="px-2.5 py-1 bg-slate-50 border border-slate-200 rounded-lg text-xs font-medium text-slate-700 outline-none hover:border-blue-300 focus:border-blue-500 transition-colors"
+                  value={dateRange.start}
+                  onChange={e => {
+                    setDatePreset('custom');
+                    setDateRange({...dateRange, start: e.target.value});
+                  }}
+                />
+                <span className="text-slate-400 text-xs font-medium">to</span>
+                <input 
+                  type="date" 
+                  className="px-2.5 py-1 bg-slate-50 border border-slate-200 rounded-lg text-xs font-medium text-slate-700 outline-none hover:border-blue-300 focus:border-blue-500 transition-colors"
+                  value={dateRange.end}
+                  onChange={e => {
+                    setDatePreset('custom');
+                    setDateRange({...dateRange, end: e.target.value});
+                  }}
+                />
+              </div>
+
+              <div className="h-5 w-px bg-slate-200 hidden sm:block" />
+
+              <div className="flex items-center gap-2">
+                <Filter size={16} className="text-slate-400" />
                 <select
-                  className="px-3 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-sm font-semibold text-slate-700 outline-none hover:border-blue-300 focus:border-blue-500 transition-colors cursor-pointer"
+                  className="px-2.5 py-1 bg-slate-50 border border-slate-200 rounded-lg text-xs font-semibold text-slate-700 outline-none hover:border-blue-300 focus:border-blue-500 transition-colors cursor-pointer"
                   value={selectedType}
                   onChange={e => setSelectedType(e.target.value)}
                 >
@@ -596,15 +766,15 @@ export default function Reports() {
             </div>
           </div>
 
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-            <div className="bg-white p-8 rounded-3xl border border-slate-200 shadow-sm">
-              <h3 className="text-lg font-bold text-slate-800 mb-8 flex items-center gap-2">
+          <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
+            <div className="lg:col-span-5 bg-white p-6 rounded-3xl border border-slate-200 shadow-sm">
+              <h3 className="text-lg font-bold text-slate-800 mb-6 flex items-center gap-2">
                 <TrendingUp size={20} className="text-blue-500" />
-                Top Production by Agent
+                Top Volume by Agent
               </h3>
-              <div className="h-[400px] w-full">
+              <div className="h-[380px] w-full">
                 <ResponsiveContainer width="100%" height="100%">
-                  <BarChart data={chartData} layout="vertical" margin={{ left: 40, right: 40 }}>
+                  <BarChart data={chartData} layout="vertical" margin={{ left: 10, right: 30, top: 10, bottom: 10 }}>
                     <CartesianGrid strokeDasharray="3 3" horizontal={true} vertical={false} stroke="#f1f5f9" />
                     <XAxis type="number" hide />
                     <YAxis 
@@ -612,8 +782,8 @@ export default function Reports() {
                       dataKey="name" 
                       axisLine={false} 
                       tickLine={false} 
-                      tick={{fill: '#64748b', fontSize: 12}}
-                      width={150}
+                      tick={{fill: '#64748b', fontSize: 11, fontWeight: 600}}
+                      width={130}
                     />
                     <Tooltip 
                       cursor={{fill: '#f8fafc'}}
@@ -623,7 +793,7 @@ export default function Reports() {
                     <Bar 
                       dataKey="volume" 
                       radius={[0, 8, 8, 0]} 
-                      barSize={24}
+                      barSize={20}
                       style={{ cursor: 'pointer' }}
                       onClick={(data) => setSelectedAgent(data)}
                     >
@@ -636,40 +806,71 @@ export default function Reports() {
               </div>
             </div>
 
-            <div className="bg-white rounded-3xl border border-slate-200 shadow-sm overflow-hidden p-8">
-              <h3 className="text-lg font-bold text-slate-800 mb-6 flex items-center gap-2">
-                <Award size={20} className="text-amber-500" />
-                Production Table
-              </h3>
+            <div className="lg:col-span-7 bg-white rounded-3xl border border-slate-200 shadow-sm overflow-hidden p-6">
+              <div className="flex items-center justify-between mb-6">
+                <h3 className="text-lg font-bold text-slate-800 flex items-center gap-2">
+                  <Award size={20} className="text-amber-500" />
+                  Production &amp; Capping Table
+                </h3>
+                <span className="text-xs font-bold text-slate-400">
+                  Showing {chartData.length} Agents
+                </span>
+              </div>
               <div className="overflow-x-auto">
                 <table className="w-full text-left">
                   <thead>
                     <tr className="border-b border-slate-100">
-                      <th className="pb-4 text-xs font-bold text-slate-400 uppercase tracking-wider">Agent</th>
-                      <th className="pb-4 text-xs font-bold text-slate-400 uppercase tracking-wider text-right">Units</th>
-                      <th className="pb-4 text-xs font-bold text-slate-400 uppercase tracking-wider text-right">Volume</th>
-                      <th className="pb-4 text-xs font-bold text-slate-400 uppercase tracking-wider text-right">Est. Comm</th>
+                      <th className="pb-3 text-xs font-bold text-slate-400 uppercase tracking-wider">Agent</th>
+                      <th className="pb-3 text-xs font-bold text-slate-400 uppercase tracking-wider text-right">Units</th>
+                      <th className="pb-3 text-xs font-bold text-slate-400 uppercase tracking-wider text-right">Volume</th>
+                      <th className="pb-3 text-xs font-bold text-slate-400 uppercase tracking-wider text-right">Gross Comm</th>
+                      <th className="pb-3 text-xs font-bold text-slate-400 uppercase tracking-wider text-right">Split Paid</th>
+                      <th className="pb-3 text-xs font-bold text-slate-400 uppercase tracking-wider text-right">Cap Status</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-50">
                     {chartData.length === 0 ? (
-                      <tr><td colSpan={4} className="py-8 text-center text-slate-400">No data for selected period.</td></tr>
+                      <tr><td colSpan={6} className="py-8 text-center text-slate-400">No production data for selected period.</td></tr>
                     ) : (
                       chartData.map((item: any) => (
                         <tr 
-                          key={item.license} 
+                          key={item.key} 
                           className="group hover:bg-slate-50 transition-colors cursor-pointer"
                           onClick={() => setSelectedAgent(item)}
                         >
-                          <td className="py-4">
+                          <td className="py-3.5">
                             <div className="flex items-center gap-2">
-                              <span className="font-bold text-slate-700">{item.name}</span>
-                              <ExternalLink size={12} className="text-slate-300 opacity-0 group-hover:opacity-100 transition-opacity" />
+                              <div>
+                                <span className="font-bold text-slate-800 block text-sm group-hover:text-blue-600 transition-colors">{item.name}</span>
+                                {item.license && item.license !== item.name && (
+                                  <span className="text-[10px] text-slate-400 font-semibold block">Lic: {item.license}</span>
+                                )}
+                              </div>
+                              <ExternalLink size={12} className="text-slate-300 opacity-0 group-hover:opacity-100 transition-opacity ml-1" />
                             </div>
                           </td>
-                          <td className="py-4 text-right text-slate-600 font-medium">{item.count}</td>
-                          <td className="py-4 text-right font-bold text-slate-900">${item.volume.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
-                          <td className="py-4 text-right font-bold text-blue-600">${item.commission.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+                          <td className="py-3.5 text-right text-slate-600 font-bold text-sm">{item.count}</td>
+                          <td className="py-3.5 text-right font-black text-slate-900 text-sm">${item.volume.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+                          <td className="py-3.5 text-right font-bold text-blue-600 text-sm">${item.grossCommission.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+                          <td className="py-3.5 text-right font-bold text-emerald-600 text-sm">${item.brokerSplitPaid.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+                          <td className="py-3.5 text-right">
+                            {item.isInexperienced ? (
+                              <span className="text-[10px] font-black uppercase tracking-wider text-purple-700 bg-purple-50 border border-purple-100 px-2 py-0.5 rounded-full inline-block">Exempt</span>
+                            ) : item.isCapped ? (
+                              <span className="text-[10px] font-black uppercase tracking-wider text-emerald-700 bg-emerald-100 border border-emerald-200 px-2 py-0.5 rounded-full inline-flex items-center gap-1">
+                                <CheckCircle2 size={11} /> Capped!
+                              </span>
+                            ) : (
+                              <div className="text-right inline-block">
+                                <span className="text-[11px] font-bold text-slate-600 block">
+                                  ${item.brokerSplitPaid.toLocaleString()} / ${item.capAmount.toLocaleString()}
+                                </span>
+                                <div className="w-16 h-1.5 bg-slate-100 rounded-full overflow-hidden ml-auto mt-0.5 border border-slate-200">
+                                  <div className="h-full bg-blue-600 rounded-full" style={{ width: `${item.capPct}%` }} />
+                                </div>
+                              </div>
+                            )}
+                          </td>
                         </tr>
                       ))
                     )}
@@ -1018,23 +1219,69 @@ export default function Reports() {
                 </button>
               </div>
 
-              <div className="p-6 max-h-[70vh] overflow-y-auto">
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-8">
+              <div className="p-6 max-h-[70vh] overflow-y-auto space-y-6">
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
                   <div className="p-4 bg-blue-50 rounded-2xl border border-blue-100">
                     <p className="text-[10px] font-black text-blue-400 uppercase tracking-widest mb-1">Total Volume</p>
-                    <p className="text-2xl font-black text-blue-900 leading-none">
+                    <p className="text-xl font-black text-blue-900 leading-none">
                       ${selectedAgent.volume.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                     </p>
                   </div>
                   <div className="p-4 bg-amber-50 rounded-2xl border border-amber-100">
                     <p className="text-[10px] font-black text-amber-500 uppercase tracking-widest mb-1">Total Units</p>
-                    <p className="text-2xl font-black text-amber-900 leading-none">{selectedAgent.count}</p>
+                    <p className="text-xl font-black text-amber-900 leading-none">{selectedAgent.count}</p>
+                  </div>
+                  <div className="p-4 bg-slate-50 rounded-2xl border border-slate-200">
+                    <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Gross Commission</p>
+                    <p className="text-xl font-black text-slate-900 leading-none">
+                      ${(selectedAgent.grossCommission || selectedAgent.commission || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                    </p>
                   </div>
                   <div className="p-4 bg-emerald-50 rounded-2xl border border-emerald-100">
-                    <p className="text-[10px] font-black text-emerald-500 uppercase tracking-widest mb-1">Est. Commission</p>
-                    <p className="text-2xl font-black text-emerald-900 leading-none">
-                      ${selectedAgent.commission.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                    <p className="text-[10px] font-black text-emerald-500 uppercase tracking-widest mb-1">Broker Split Paid</p>
+                    <p className="text-xl font-black text-emerald-900 leading-none">
+                      ${(selectedAgent.brokerSplitPaid || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                     </p>
+                  </div>
+                </div>
+
+                {/* Cap Progress Card */}
+                <div className="p-5 bg-gradient-to-r from-slate-900 to-slate-800 text-white rounded-2xl shadow-md">
+                  <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-3">
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <h4 className="font-bold text-sm text-slate-300">Annual Cap Status</h4>
+                        {selectedAgent.isInexperienced ? (
+                          <span className="text-[10px] font-black uppercase text-purple-300 bg-purple-900/60 px-2.5 py-0.5 rounded-full border border-purple-700">Exempt (Inexperienced)</span>
+                        ) : selectedAgent.isCapped ? (
+                          <span className="text-[10px] font-black uppercase text-emerald-300 bg-emerald-900/60 px-2.5 py-0.5 rounded-full border border-emerald-700 flex items-center gap-1">
+                            <CheckCircle2 size={12} /> Capped!
+                          </span>
+                        ) : (
+                          <span className="text-[10px] font-black uppercase text-blue-300 bg-blue-900/60 px-2.5 py-0.5 rounded-full border border-blue-700">In Progress</span>
+                        )}
+                      </div>
+                      <p className="text-xs text-slate-400 mt-1">
+                        Cap Target: <strong className="text-white">${(selectedAgent.capAmount || 15000).toLocaleString()}</strong> • 
+                        Broker Split Paid: <strong className="text-emerald-400">${(selectedAgent.brokerSplitPaid || 0).toLocaleString()}</strong>
+                      </p>
+                    </div>
+                    <div className="text-right">
+                      <span className="text-2xl font-black text-white">{selectedAgent.capPct || 0}%</span>
+                      <p className="text-[11px] text-slate-400 font-medium">
+                        {selectedAgent.isCapped 
+                          ? '100% Agent Split Unlocked' 
+                          : `$${Math.max(0, (selectedAgent.capAmount || 15000) - (selectedAgent.brokerSplitPaid || 0)).toLocaleString()} remaining to cap`}
+                      </p>
+                    </div>
+                  </div>
+                  <div className="w-full h-2.5 bg-slate-700 rounded-full overflow-hidden">
+                    <div 
+                      className={`h-full rounded-full transition-all duration-500 ${
+                        selectedAgent.isCapped ? 'bg-emerald-400' : 'bg-blue-500'
+                      }`}
+                      style={{ width: `${selectedAgent.capPct || 0}%` }}
+                    />
                   </div>
                 </div>
 
@@ -1043,38 +1290,49 @@ export default function Reports() {
                     <thead>
                       <tr className="border-b border-slate-100">
                         <th className="pb-3 text-[10px] font-black text-slate-400 uppercase tracking-widest">Date / Address</th>
-                        <th className="pb-3 text-[10px] font-black text-slate-400 uppercase tracking-widest">Type</th>
+                        <th className="pb-3 text-[10px] font-black text-slate-400 uppercase tracking-widest">Source</th>
                         <th className="pb-3 text-[10px] font-black text-slate-400 uppercase tracking-widest text-right">Price</th>
-                        <th className="pb-3 text-[10px] font-black text-slate-400 uppercase tracking-widest text-right">Rate</th>
-                        <th className="pb-3 text-[10px] font-black text-slate-400 uppercase tracking-widest text-right">Commission</th>
+                        <th className="pb-3 text-[10px] font-black text-slate-400 uppercase tracking-widest text-right">Gross Comm</th>
+                        <th className="pb-3 text-[10px] font-black text-slate-400 uppercase tracking-widest text-right">Broker Split</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-50">
-                      {agentTransactions.map((tx, idx) => {
-                        const commission = tx.price * (tx.rate / 100);
-                        return (
-                          <tr key={idx} className="hover:bg-slate-50 transition-colors">
-                            <td className="py-4">
-                              <div className="text-sm font-bold text-slate-700">{tx.date}</div>
-                              <div className="text-[10px] font-black text-slate-400 uppercase tracking-tight truncate max-w-[200px]">
-                                {tx.address || 'Address Not Recorded'}
-                              </div>
-                            </td>
-                            <td className="py-4">
-                              <span className="text-[10px] font-black text-slate-500 bg-slate-100 px-2 py-0.5 rounded uppercase tracking-tighter">
-                                {tx.type}
-                              </span>
-                            </td>
-                            <td className="py-4 text-sm font-bold text-slate-900 text-right">
-                              ${tx.price.toLocaleString()}
-                            </td>
-                            <td className="py-4 text-sm font-medium text-slate-400 text-right">{tx.rate}%</td>
-                            <td className="py-4 text-sm font-black text-blue-600 text-right">
-                              ${commission.toLocaleString(undefined, { minimumFractionDigits: 2 })}
-                            </td>
-                          </tr>
-                        );
-                      })}
+                      {agentTransactions.length === 0 ? (
+                        <tr><td colSpan={5} className="py-6 text-center text-slate-400 text-sm">No transactions found for this agent.</td></tr>
+                      ) : (
+                        agentTransactions.map((tx, idx) => {
+                          const gross = tx.grossCommission || (tx.price * (tx.rate / 100));
+                          const split = tx.companySplitPaid || 0;
+                          return (
+                            <tr key={tx.id || idx} className="hover:bg-slate-50 transition-colors">
+                              <td className="py-3">
+                                <div className="text-sm font-bold text-slate-800">{tx.date}</div>
+                                <div className="text-[11px] font-semibold text-slate-500 truncate max-w-[220px]">
+                                  {tx.address || 'Historical Sales Transaction'}
+                                </div>
+                              </td>
+                              <td className="py-3">
+                                <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full uppercase tracking-tight ${
+                                  tx.source === 'cdaRequest' 
+                                    ? 'bg-blue-50 text-blue-700 border border-blue-100' 
+                                    : 'bg-slate-100 text-slate-600 border border-slate-200'
+                                }`}>
+                                  {tx.source === 'cdaRequest' ? 'CDA Request' : 'Imported CSV'}
+                                </span>
+                              </td>
+                              <td className="py-3 text-sm font-bold text-slate-900 text-right">
+                                ${tx.price.toLocaleString()}
+                              </td>
+                              <td className="py-3 text-sm font-bold text-blue-600 text-right">
+                                ${gross.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                              </td>
+                              <td className="py-3 text-sm font-bold text-emerald-600 text-right">
+                                ${split.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                              </td>
+                            </tr>
+                          );
+                        })
+                      )}
                     </tbody>
                   </table>
                 </div>
