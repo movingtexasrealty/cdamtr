@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { 
   collection, 
   query, 
@@ -31,7 +31,8 @@ import {
   AlertTriangle,
   RotateCcw,
   Check,
-  Trash2
+  Trash2,
+  FileSpreadsheet
 } from 'lucide-react';
 import { 
   BarChart, 
@@ -45,10 +46,125 @@ import {
 } from 'recharts';
 import { motion, AnimatePresence } from 'motion/react';
 
+const DEFAULT_CSV_DATA = `Date, License, Type, Price, Rate
+2026-05-01,"603020","Sales",190000,3
+2026-05-01,"566153","Sales",190000,3
+2026-04-30,"788421","Sales",237000,3
+2026-04-30,"566153","Sales",169000,3
+2026-04-23,"788421","Sales",239000,3
+2026-04-21,"506471","Sales",415000,1.5
+2026-04-17,"603020","Sales",275000,3
+2026-04-16,"506471","Sales",260000,3
+2026-04-10,"566153","Sales",250000,3
+2026-03-11,"506471","Sales",365000,2.5
+2026-03-09,"788421","Sales",245000,0.21
+2026-03-01,"603020","Leases",2105,100
+2025-12-30,"506471","Sales",302000,3
+2025-12-17,"506471","Sales",143750,3
+2025-12-14,"506471","Sales",304990,3
+2025-11-19,"506471","Sales",287990,3
+2025-11-14,"566153","Land",82950,3
+2025-11-14,"566153","Land",85950,3
+2025-11-12,"506471","Sales",580000,3
+2025-10-31,"603020","Leases",1890,100
+2025-10-28,"566153","Leases",1850,70
+2025-09-26,"566153","Sales",211400,3
+2025-09-25,"506471","Sales",309990,3
+2025-09-17,"678452","Sales",658000,3
+2025-09-25,"678452","Sales",680000,3
+2025-08-02,"566153","Leases",2035,100
+2025-07-31,"566153","Leases",2000,70
+2025-07-24,"566153","Sales",335900,3
+2025-07-14,"603020","Leases",2000,100
+2025-07-11,"603020","Sales",285000,3
+2025-07-02,"506471","Sales",285000,3
+2025-06-30,"566153","Sales",533000,3
+2025-06-27,"566153","Sales",599900,3
+2025-06-12,"566153","Leases",2335,100
+2025-05-30,"603020","Leases",1850,100
+2025-05-29,"566153","Sales",335550,4
+2025-05-27,"603020","Leases",1950,100
+2025-03-31,"603020","Leases",1870,100
+2025-03-11,"603020","Leases",1850,100
+2025-03-03,"603020","Leases",2035,50
+2025-02-27,"603020","Leases",2000,100
+2025-02-27,"566153","Leases",1850,100
+2025-01-29,"603020","Leases",1870,100`;
+
+function parseCSVRows(csvText: string) {
+  const lines = csvText.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+  if (lines.length < 2) return [];
+
+  const parseLine = (line: string): string[] => {
+    const result: string[] = [];
+    let current = '';
+    let inQuotes = false;
+
+    for (let i = 0; i < line.length; i++) {
+      const char = line[i];
+      if (char === '"' || char === "'") {
+        inQuotes = !inQuotes;
+      } else if (char === ',' && !inQuotes) {
+        result.push(current.trim().replace(/^["']|["']$/g, ''));
+        current = '';
+      } else {
+        current += char;
+      }
+    }
+    result.push(current.trim().replace(/^["']|["']$/g, ''));
+    return result;
+  };
+
+  const headerLine = parseLine(lines[0]);
+  const headers = headerLine.map(h => h.toLowerCase());
+
+  let dateIdx = headers.findIndex(h => h.includes('date') || h.includes('closing'));
+  let licenseIdx = headers.findIndex(h => h.includes('license') || h.includes('agent') || h.includes('realtor'));
+  let typeIdx = headers.findIndex(h => h.includes('type') || h.includes('category') || h.includes('property'));
+  let priceIdx = headers.findIndex(h => h.includes('price') || h.includes('volume') || h.includes('amount') || h.includes('sales'));
+  let rateIdx = headers.findIndex(h => h.includes('rate') || h.includes('split') || h.includes('commission') || h.includes('%'));
+
+  if (dateIdx === -1) dateIdx = 0;
+  if (licenseIdx === -1) licenseIdx = 1;
+  if (typeIdx === -1) typeIdx = 2;
+  if (priceIdx === -1) priceIdx = 3;
+  if (rateIdx === -1) rateIdx = 4;
+
+  const records: any[] = [];
+
+  for (let i = 1; i < lines.length; i++) {
+    const cols = parseLine(lines[i]);
+    if (cols.length < 2) continue;
+
+    const rawDate = cols[dateIdx] || new Date().toISOString().split('T')[0];
+    const license = cols[licenseIdx] || 'UNKNOWN';
+    const type = cols[typeIdx] || 'Sales';
+
+    const rawPrice = (cols[priceIdx] || '0').replace(/[\$,]/g, '');
+    const rawRate = (cols[rateIdx] || '3').replace(/[%]/g, '');
+
+    const price = parseFloat(rawPrice) || 0;
+    const rate = parseFloat(rawRate) || 3;
+
+    records.push({
+      date: rawDate,
+      license: license,
+      type: type,
+      price: price,
+      rate: rate,
+      createdAt: new Date().toISOString()
+    });
+  }
+
+  return records;
+}
+
 export default function Reports() {
   const [salesHistory, setSalesHistory] = useState<any[]>([]);
   const [cdaRequests, setCdaRequests] = useState<any[]>([]);
   const [importing, setImporting] = useState(false);
+  const [showImportModal, setShowImportModal] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const [clearingHistory, setClearingHistory] = useState(false);
   const [showClearHistoryConfirm, setShowClearHistoryConfirm] = useState(false);
   const [agents, setAgents] = useState<any[]>([]);
@@ -94,41 +210,59 @@ export default function Reports() {
     };
   }, []);
 
-  const importSalesData = async () => {
+  const processCSVText = async (csvText: string) => {
     setImporting(true);
     try {
-      const existing = await getDocs(query(collection(db, 'salesHistory'), limit(1)));
-      if (!existing.empty) {
-        alert('Data already imported.');
+      const records = parseCSVRows(csvText);
+      if (records.length === 0) {
+        alert('No valid sales records found in the provided CSV file.');
+        setImporting(false);
         return;
       }
 
-      const response = await fetch('/src/initial_sales_data.csv');
-      const text = await response.text();
-      const lines = text.trim().split('\n').slice(1);
-
-      const batch = writeBatch(db);
-      lines.forEach((line) => {
-        const [date, license, type, price, rate] = line.split(',').map(s => s.replace(/"/g, '').trim());
-        const docRef = doc(collection(db, 'salesHistory'));
-        batch.set(docRef, {
-          date,
-          license,
-          type,
-          price: parseFloat(price),
-          rate: parseFloat(rate),
-          createdAt: new Date().toISOString()
+      // Write in batches of 500
+      for (let i = 0; i < records.length; i += 500) {
+        const batch = writeBatch(db);
+        const chunk = records.slice(i, i + 500);
+        chunk.forEach((item) => {
+          const docRef = doc(collection(db, 'salesHistory'));
+          batch.set(docRef, item);
         });
-      });
+        await batch.commit();
+      }
 
-      await batch.commit();
-      alert('Successfully imported sales data.');
+      alert(`Successfully imported ${records.length} sales records!`);
+      setShowImportModal(false);
     } catch (error) {
       console.error('Import failed:', error);
-      alert('Failed to import sales data.');
+      alert('Failed to import CSV data. Please check your CSV file formatting.');
     } finally {
       setImporting(false);
     }
+  };
+
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = async (event) => {
+      const text = event.target?.result as string;
+      if (text) {
+        await processCSVText(text);
+      }
+      if (fileInputRef.current) {
+        fileInputRef.current.value = '';
+      }
+    };
+    reader.onerror = () => {
+      alert('Error reading the selected CSV file.');
+    };
+    reader.readAsText(file);
+  };
+
+  const loadDefaultSampleData = async () => {
+    await processCSVText(DEFAULT_CSV_DATA);
   };
 
   const clearSalesHistory = async () => {
@@ -407,7 +541,7 @@ export default function Reports() {
                 </button>
               )}
               <button 
-                onClick={importSalesData}
+                onClick={() => setShowImportModal(true)}
                 disabled={importing}
                 className="flex items-center gap-2 bg-slate-100 text-slate-700 px-4 py-2.5 rounded-xl font-bold hover:bg-slate-200 transition-colors text-sm disabled:opacity-50"
               >
@@ -991,6 +1125,90 @@ export default function Reports() {
                   'Yes, Remove'
                 )}
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Import CSV Modal */}
+      {showImportModal && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-50 flex items-center justify-center p-4 animate-in fade-in duration-200">
+          <div className="bg-white rounded-3xl w-full max-w-lg p-6 sm:p-8 shadow-2xl border border-slate-100 relative">
+            <button
+              onClick={() => setShowImportModal(false)}
+              className="absolute top-6 right-6 text-slate-400 hover:text-slate-600 transition-colors p-2 hover:bg-slate-100 rounded-full"
+            >
+              <X size={20} />
+            </button>
+
+            <div className="flex items-center gap-3.5 mb-2">
+              <div className="w-12 h-12 rounded-2xl bg-blue-50 text-blue-600 flex items-center justify-center flex-shrink-0">
+                <FileSpreadsheet size={24} />
+              </div>
+              <div>
+                <h3 className="text-xl font-black text-slate-900">Import Sales History</h3>
+                <p className="text-xs text-slate-500 font-semibold">Upload a .CSV file or load default sample data</p>
+              </div>
+            </div>
+
+            <div className="space-y-4 my-6">
+              {/* Option 1: Choose File */}
+              <div 
+                onClick={() => fileInputRef.current?.click()}
+                className="border-2 border-dashed border-blue-200 hover:border-blue-500 bg-blue-50/40 hover:bg-blue-50/80 p-6 rounded-2xl text-center cursor-pointer transition-all group"
+              >
+                <Upload size={36} className="mx-auto mb-2 text-blue-500 group-hover:scale-110 transition-transform" />
+                <span className="text-sm font-black text-slate-900 block group-hover:text-blue-600 transition-colors">
+                  Choose .CSV File from Computer
+                </span>
+                <span className="text-xs text-slate-500 font-medium block mt-1">
+                  Click to select any sales CSV spreadsheet on your device
+                </span>
+                <input 
+                  type="file" 
+                  ref={fileInputRef} 
+                  accept=".csv,text/csv" 
+                  onChange={handleFileChange} 
+                  className="hidden" 
+                />
+              </div>
+
+              <div className="relative flex items-center justify-center">
+                <div className="border-t border-slate-200 w-full" />
+                <span className="bg-white px-3 text-[11px] font-extrabold uppercase text-slate-400 tracking-wider absolute">
+                  OR
+                </span>
+              </div>
+
+              {/* Option 2: Load Default Sample Data */}
+              <button
+                type="button"
+                disabled={importing}
+                onClick={loadDefaultSampleData}
+                className="w-full p-4 rounded-2xl border border-slate-200 hover:border-blue-300 bg-slate-50/50 hover:bg-white text-slate-700 font-bold text-xs flex items-center justify-between transition-all group"
+              >
+                <div className="text-left">
+                  <span className="block font-black text-slate-900 text-sm group-hover:text-blue-600 transition-colors">
+                    Load Default Sample Sales Data
+                  </span>
+                  <span className="text-slate-500 font-medium text-[11px]">
+                    Includes 43 sample historical sales &amp; lease records
+                  </span>
+                </div>
+                <div className="bg-blue-600 hover:bg-blue-700 text-white px-3.5 py-2 rounded-xl text-xs font-bold flex-shrink-0 transition-colors shadow-sm">
+                  {importing ? 'Importing...' : 'Load Sample'}
+                </div>
+              </button>
+            </div>
+
+            <div className="p-4 bg-slate-50 rounded-2xl border border-slate-100 text-[11px] text-slate-500 space-y-1">
+              <span className="font-bold text-slate-700 block">Expected CSV Header Format:</span>
+              <p className="font-mono text-[10px] text-slate-600 font-semibold">
+                Date, License, Type, Price, Rate
+              </p>
+              <p className="text-[10px] text-slate-400">
+                Example row: 2026-05-01, "603020", "Sales", 250000, 3
+              </p>
             </div>
           </div>
         </div>
