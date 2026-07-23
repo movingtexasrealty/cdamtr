@@ -45,6 +45,7 @@ import {
   Cell
 } from 'recharts';
 import { motion, AnimatePresence } from 'motion/react';
+import { matchLicense, normalizeDate } from '../lib/capCalculator';
 
 const DEFAULT_CSV_DATA = `Date, License, Type, Price, Rate
 2026-05-01,"603020","Sales",190000,3
@@ -137,6 +138,7 @@ function parseCSVRows(csvText: string) {
     if (cols.length < 2) continue;
 
     const rawDate = cols[dateIdx] || new Date().toISOString().split('T')[0];
+    const normDate = normalizeDate(rawDate);
     const license = cols[licenseIdx] || 'UNKNOWN';
     const type = cols[typeIdx] || 'Sales';
 
@@ -147,7 +149,7 @@ function parseCSVRows(csvText: string) {
     const rate = parseFloat(rawRate) || 3;
 
     records.push({
-      date: rawDate,
+      date: normDate,
       license: license,
       type: type,
       price: price,
@@ -298,13 +300,14 @@ export default function Reports() {
     // 1. Historical imported sales
     salesHistory.forEach((sh) => {
       const lic = String(sh.license || '').trim();
-      const price = sh.price || 0;
-      const rate = sh.rate || 0;
+      const normDate = normalizeDate(sh.date);
+      const price = Number(sh.price) || 0;
+      const rate = Number(sh.rate) || 0;
       const grossComm = price * (rate / 100);
 
       // Find matching agent profile for commission split
       const agent = agents.find(a => 
-        (a.licenseNumber && String(a.licenseNumber).trim().toLowerCase() === lic.toLowerCase()) ||
+        matchLicense(a.licenseNumber, lic) ||
         (a.email && a.email.toLowerCase() === lic.toLowerCase()) ||
         (a.name && a.name.trim().toLowerCase() === lic.toLowerCase())
       );
@@ -314,21 +317,24 @@ export default function Reports() {
         : 20;
 
       const companySplit = sh.companySplitAmount !== undefined
-        ? sh.companySplitAmount
+        ? Number(sh.companySplitAmount)
         : (grossComm * (brokerSplitPct / 100));
+
+      const agentKey = agent ? agent.id : (lic ? `lic_${lic.toLowerCase().replace(/\D/g, '') || lic.toLowerCase()}` : 'unassigned');
+      const agentName = agent?.name || (lic && lic !== 'UNKNOWN' ? `License: ${lic}` : 'Unassigned Agent');
 
       list.push({
         id: sh.id || `sh_${Math.random()}`,
         source: 'salesHistory',
-        date: sh.date || '2025-01-01',
+        date: normDate,
         license: lic,
         type: sh.type || 'Sales',
         price: price,
         rate: rate,
         grossCommission: grossComm,
         companySplitPaid: companySplit,
-        agentName: agent?.name || (lic && lic !== 'UNKNOWN' ? `License: ${lic}` : 'Unassigned Agent'),
-        agentId: agent?.id || lic || 'Unknown',
+        agentName: agentName,
+        agentId: agentKey,
         agentObj: agent
       });
     });
@@ -337,29 +343,34 @@ export default function Reports() {
     cdaRequests.forEach((req) => {
       if (req.status !== 'approved') return;
 
-      const date = req.closingDate || (req.createdAt ? req.createdAt.split('T')[0] : '2026-01-01');
+      const normDate = normalizeDate(req.closingDate || req.createdAt);
       const lic = req.licenseNumber || req.agentName || 'CDA Agent';
-      const price = req.salePrice || 0;
-      const grossComm = req.grossCommission || 0;
-      const companySplit = req.companySplitAmount || req.brokerSplitAmount || 0;
+      const price = Number(req.salePrice) || 0;
+      const grossComm = Number(req.grossCommission) || 0;
+      const companySplit = Number(req.companySplitAmount || req.brokerSplitAmount) || 0;
 
       const agent = agents.find(a => 
-        a.id === req.agentId || 
-        (a.licenseNumber && String(a.licenseNumber).trim().toLowerCase() === String(lic).trim().toLowerCase())
+        (req.agentId && a.id === req.agentId) || 
+        matchLicense(a.licenseNumber, lic) ||
+        (a.email && req.agentEmail && a.email.toLowerCase() === req.agentEmail.toLowerCase()) ||
+        (a.name && req.agentName && a.name.trim().toLowerCase() === req.agentName.trim().toLowerCase())
       );
+
+      const agentKey = agent ? agent.id : (req.agentId || `lic_${lic.toLowerCase().replace(/\D/g, '') || lic.toLowerCase()}`);
+      const agentName = agent?.name || req.agentName || `License: ${lic}`;
 
       list.push({
         id: req.id,
         source: 'cdaRequest',
-        date: date,
+        date: normDate,
         license: lic,
         type: req.propertyType || 'Home Sale',
         price: price,
         rate: req.commissionRate || (price > 0 ? Number(((grossComm / price) * 100).toFixed(2)) : 3),
         grossCommission: grossComm,
         companySplitPaid: companySplit,
-        agentName: agent?.name || req.agentName || `License: ${lic}`,
-        agentId: agent?.id || req.agentId || lic,
+        agentName: agentName,
+        agentId: agentKey,
         address: req.propertyAddress || 'CDA Request',
         agentObj: agent
       });
@@ -373,17 +384,40 @@ export default function Reports() {
   const uniqueTypes = ['All', ...Array.from(new Set(allProductionTx.map(s => s.type).filter(Boolean)))];
 
   const filteredHistory = allProductionTx.filter(s => {
-    const matchDate = s.date >= dateRange.start && s.date <= dateRange.end;
+    const normDate = normalizeDate(s.date);
+    const matchDate = normDate >= dateRange.start && normDate <= dateRange.end;
     const matchType = selectedType === 'All' || s.type === selectedType;
     return matchDate && matchType;
   });
 
   const agentProductionMap: Record<string, any> = {};
 
+  // Seed agentProductionMap with all active roster agents so every agent is displayed in the production table
+  agents.forEach(agent => {
+    const key = agent.id;
+    if (!key) return;
+    const capAmount = agent?.commissionProfile?.capAmount !== undefined ? agent.commissionProfile.capAmount : 15000;
+    const isInexperienced = !!agent?.commissionProfile?.isInexperienced;
+
+    agentProductionMap[key] = {
+      key,
+      name: agent.name || `License: ${agent.licenseNumber}`,
+      license: agent.licenseNumber || '',
+      volume: 0,
+      count: 0,
+      grossCommission: 0,
+      brokerSplitPaid: 0,
+      capAmount,
+      isInexperienced,
+      transactions: [],
+      agentObj: agent
+    };
+  });
+
   filteredHistory.forEach(curr => {
-    const key = curr.agentId || curr.license || 'Unknown';
+    const key = curr.agentId || 'Unknown';
     if (!agentProductionMap[key]) {
-      const agent = curr.agentObj || agents.find(a => a.id === key || (a.licenseNumber && String(a.licenseNumber).trim().toLowerCase() === String(curr.license).trim().toLowerCase()));
+      const agent = curr.agentObj || agents.find(a => a.id === key || matchLicense(a.licenseNumber, curr.license));
       const capAmount = agent?.commissionProfile?.capAmount !== undefined ? agent.commissionProfile.capAmount : 15000;
       const isInexperienced = !!agent?.commissionProfile?.isInexperienced;
 
