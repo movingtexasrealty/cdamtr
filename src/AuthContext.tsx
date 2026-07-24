@@ -35,6 +35,9 @@ interface UserProfile {
     isInexperienced?: boolean;
     mentorActive?: boolean;
     mentorSplit?: number;
+    enablePostCapTransactionFee?: boolean;
+    postCapTransactionFee?: number;
+    postCapLeaseTransactionFee?: number;
     overrides?: {
       [transactionType: string]: {
         agentSplit: number;

@@ -158,9 +158,12 @@ export default function Requests() {
             title: 'CDA Request Approved',
             message: `The CDA request for ${targetReq?.propertyAddress || 'your transaction'} has been approved by the Broker.`,
             requestId: id,
+            agentId: targetReq?.agentId || '',
+            agentName: targetReq?.agentName || '',
+            agentEmail: targetReq?.agentEmail || '',
             createdAt: new Date().toISOString(),
             readBy: [],
-            recipientRole: 'all',
+            recipientRole: 'agent',
             type: 'approval'
           });
         } catch (nErr) {
@@ -196,9 +199,12 @@ export default function Requests() {
           title: 'CDA Request Returned for Revision',
           message: `Your CDA request for ${rejectingRequest.propertyAddress || 'the transaction'} was returned for revision. Note: ${rejectionReason.trim() || 'Please check details.'}`,
           requestId: rejectingRequest.id,
+          agentId: rejectingRequest.agentId || '',
+          agentName: rejectingRequest.agentName || '',
+          agentEmail: rejectingRequest.agentEmail || '',
           createdAt: new Date().toISOString(),
           readBy: [],
-          recipientRole: 'all',
+          recipientRole: 'agent',
           type: 'rejection'
         });
       } catch (nErr) {

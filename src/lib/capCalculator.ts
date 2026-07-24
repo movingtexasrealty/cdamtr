@@ -286,19 +286,66 @@ export function calculateCDASplit(
     agentGross = 0;
   }
 
-  // Apply Agent Cap calculation!
-  const capAmount = agentProfile?.commissionProfile?.capAmount !== undefined
-    ? agentProfile.commissionProfile.capAmount
-    : 15000;
+  // Apply Agent Cap calculation & Post-Cap Transaction Fee!
+  const commProfile = agentProfile?.commissionProfile;
+  const capAmount = commProfile?.capAmount !== undefined ? commProfile.capAmount : 15000;
+  const enablePostCapFee = !!commProfile?.enablePostCapTransactionFee;
+  const postCapStdFee = commProfile?.postCapTransactionFee !== undefined ? Number(commProfile.postCapTransactionFee) : 200;
+  const postCapLeaseFee = commProfile?.postCapLeaseTransactionFee !== undefined ? Number(commProfile.postCapLeaseTransactionFee) : 50;
 
   if (brokerSplit > 0 && !isInexperienced) {
     if (ytdSplitPaid >= capAmount) {
-      brokerSplit = 0;
-      agentGross = (req.isOwnerAgent && !req.payAgent) ? 0 : netToMtr - mentorSplitAmount;
+      if (!enablePostCapFee) {
+        brokerSplit = 0;
+        agentGross = (req.isOwnerAgent && !req.payAgent) ? 0 : netToMtr - mentorSplitAmount;
+      } else {
+        const isLease = req.propertyType === 'Lease';
+        const fee = isLease ? postCapLeaseFee : postCapStdFee;
+
+        if (isLease) {
+          if (netToMtr <= 800) {
+            agentGross = (req.isOwnerAgent && !req.payAgent) ? 0 : netToMtr;
+            brokerSplit = 0;
+          } else {
+            let bFee = Math.min(netToMtr, fee);
+            let aGross = netToMtr - bFee - mentorSplitAmount;
+            if (aGross < 800) {
+              const deficiency = 800 - aGross;
+              aGross = 800;
+              bFee = Math.max(0, bFee - deficiency);
+            }
+            brokerSplit = bFee;
+            agentGross = (req.isOwnerAgent && !req.payAgent) ? 0 : aGross;
+          }
+        } else {
+          brokerSplit = Math.min(netToMtr, fee);
+          agentGross = (req.isOwnerAgent && !req.payAgent) ? 0 : Math.max(0, netToMtr - brokerSplit - mentorSplitAmount);
+        }
+      }
     } else if (ytdSplitPaid + brokerSplit > capAmount) {
       const remainingToCap = Math.max(0, capAmount - ytdSplitPaid);
-      brokerSplit = remainingToCap;
-      agentGross = (req.isOwnerAgent && !req.payAgent) ? 0 : netToMtr - remainingToCap - mentorSplitAmount;
+      const isLease = req.propertyType === 'Lease';
+      const fee = isLease ? postCapLeaseFee : postCapStdFee;
+
+      let bFee = enablePostCapFee ? Math.max(remainingToCap, fee) : remainingToCap;
+      bFee = Math.min(netToMtr, bFee);
+
+      if (isLease && netToMtr > 800) {
+        let aGross = netToMtr - bFee - mentorSplitAmount;
+        if (aGross < 800) {
+          const deficiency = 800 - aGross;
+          aGross = 800;
+          bFee = Math.max(0, bFee - deficiency);
+        }
+        brokerSplit = bFee;
+        agentGross = (req.isOwnerAgent && !req.payAgent) ? 0 : aGross;
+      } else if (isLease && netToMtr <= 800) {
+        agentGross = (req.isOwnerAgent && !req.payAgent) ? 0 : netToMtr;
+        brokerSplit = 0;
+      } else {
+        brokerSplit = bFee;
+        agentGross = (req.isOwnerAgent && !req.payAgent) ? 0 : Math.max(0, netToMtr - bFee - mentorSplitAmount);
+      }
     }
   }
 

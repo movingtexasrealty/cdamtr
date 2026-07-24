@@ -11,10 +11,13 @@ interface AppNotification {
   title: string;
   message: string;
   requestId?: string;
+  agentId?: string;
   agentName?: string;
+  agentEmail?: string;
   createdAt: string;
   readBy?: string[];
-  recipientRole?: 'admin' | 'all';
+  recipientRole?: 'admin' | 'all' | 'agent';
+  type?: string;
 }
 
 export default function NotificationBell() {
@@ -59,9 +62,29 @@ export default function NotificationBell() {
       const items: AppNotification[] = [];
       snapshot.docs.forEach((docSnap) => {
         const data = docSnap.data() as AppNotification;
-        // Filter: show if recipientRole is 'all', or if recipientRole is 'admin' and user is admin
-        if (!data.recipientRole || data.recipientRole === 'all' || (data.recipientRole === 'admin' && isAdmin)) {
+        if (isAdmin) {
+          // Admins receive ALL notifications
           items.push({ id: docSnap.id, ...data });
+        } else {
+          // Non-admin agents get ONLY notifications specific to them
+          if (data.recipientRole === 'admin') return;
+
+          const matchesUid = !!(data.agentId && profile.uid && data.agentId === profile.uid);
+          const matchesEmail = !!(data.agentEmail && profile.email && data.agentEmail.toLowerCase() === profile.email.toLowerCase());
+          const matchesName = !!(data.agentName && profile.name && data.agentName.trim().toLowerCase() === profile.name.trim().toLowerCase());
+
+          if (data.agentId || data.agentEmail || data.agentName) {
+            if (matchesUid || matchesEmail || matchesName) {
+              items.push({ id: docSnap.id, ...data });
+            }
+          } else if (data.recipientRole === 'agent') {
+            return;
+          } else if (data.requestId) {
+            // Legacy transaction notification without target agent fields - hide from other non-admin agents
+            return;
+          } else if (data.recipientRole === 'all') {
+            items.push({ id: docSnap.id, ...data });
+          }
         }
       });
 
@@ -152,7 +175,7 @@ export default function NotificationBell() {
       <button
         onClick={() => setIsOpen(!isOpen)}
         className="relative p-2.5 text-slate-600 hover:text-blue-600 hover:bg-blue-50 rounded-xl transition-all flex items-center justify-center focus:outline-none"
-        title="Admin Notifications"
+        title="Notifications"
       >
         <Bell size={20} />
         {unreadCount > 0 && (

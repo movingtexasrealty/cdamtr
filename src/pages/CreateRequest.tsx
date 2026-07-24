@@ -9,7 +9,7 @@ import { db, handleFirestoreError, OperationType } from '../firebase';
 import { collection, addDoc, serverTimestamp, query, where, onSnapshot, doc, getDoc, updateDoc } from 'firebase/firestore';
 import { useNavigate, useParams } from 'react-router-dom';
 import { sendAdminNotificationEmail } from '../lib/emailService';
-import { calculateAgentCapFromData } from '../lib/capCalculator';
+import { calculateAgentCapFromData, calculateCDASplit } from '../lib/capCalculator';
 import { 
   Building2, 
   DollarSign, 
@@ -182,171 +182,8 @@ export default function CreateRequest() {
   }, [profile]);
 
   useEffect(() => {
-    const salePrice = formData.salePrice !== undefined ? formData.salePrice : 0;
-    const commissionRate = formData.commissionRate !== undefined ? formData.commissionRate : 0;
-
-    // Calculate base commission
-    const baseCommission = formData.rateType === 'percentage' 
-      ? (salePrice * (commissionRate / 100))
-      : (formData.rateType === 'flat' ? commissionRate : 0);
-
-    // Calculate dynamic bonus amount based on percentage or flat rate
-    let bonusAmount = 0;
-    if (formData.bonusRateType === 'percentage') {
-      const percentage = formData.bonusRateValue !== undefined ? formData.bonusRateValue : 0;
-      bonusAmount = salePrice * (percentage / 100);
-    } else if (formData.bonusRateType === 'flat') {
-      bonusAmount = formData.bonusRateValue !== undefined ? formData.bonusRateValue : 0;
-    }
-
-    // Calculate dynamic rebate amount based on percentage or flat rate
-    let rebateAmount = 0;
-    if (formData.rebateRateType === 'percentage') {
-      const percentage = formData.rebateRateValue !== undefined ? formData.rebateRateValue : 0;
-      rebateAmount = salePrice * (percentage / 100);
-    } else if (formData.rebateRateType === 'flat') {
-      rebateAmount = formData.rebateRateValue !== undefined ? formData.rebateRateValue : 0;
-    }
-
-    // Calculate dynamic referral amount based on percentage or flat rate
-    let referralAmount = 0;
-    if (formData.referralRateType === 'percentage') {
-      const percentage = formData.referralRateValue !== undefined ? formData.referralRateValue : 0;
-      referralAmount = baseCommission * (percentage / 100);
-    } else if (formData.referralRateType === 'flat') {
-      referralAmount = formData.referralRateValue !== undefined ? formData.referralRateValue : 0;
-    }
-
-    // Gross takes into account bonus, referral, and rebate/discount deductions
-    const gross = baseCommission + bonusAmount - referralAmount - rebateAmount;
-    
-    // Dynamically calculate co-broker split amount as a percentage of sale/lease price
-    const coBrokerSplitAmount = (formData.propertyType === 'Lease' && formData.representation === 'Seller' && formData.hasCoBroker)
-      ? Number((salePrice * ((formData.coBrokerSplitPercentage || 0) / 100)).toFixed(2))
-      : 0;
-    
-    let brokerSplit = 0;
-    let agentGross = 0;
-    let mentorSplitAmount = 0;
-
-    let agentSplit = 80; // Default fallback split: 80/20
-    let bSplit = 20;
-    let mentorSplit = 0;
-    let splitType: 'percentage' | 'flat' = 'percentage';
-    let overrides: any = null;
-
-    const isInexperienced = !!profile?.commissionProfile?.isInexperienced;
-    const isMentorActive = !!(isInexperienced && profile?.commissionProfile?.mentorActive);
-
-    if (profile?.commissionProfile) {
-      const pAgentSplit = profile.commissionProfile.agentSplit;
-      const pBrokerSplit = profile.commissionProfile.brokerSplit;
-      const pMentorSplit = profile.commissionProfile.mentorSplit || 0;
-      
-      // Use profile splits if defined and they do not both sum to 0
-      if (typeof pAgentSplit === 'number' && typeof pBrokerSplit === 'number' && (pAgentSplit > 0 || pBrokerSplit > 0)) {
-        agentSplit = pAgentSplit;
-        bSplit = pBrokerSplit;
-      }
-      if (isMentorActive && typeof pMentorSplit === 'number') {
-        mentorSplit = pMentorSplit;
-      }
-      splitType = profile.commissionProfile.splitType || 'percentage';
-      overrides = profile.commissionProfile.overrides;
-    } else if (profile?.role === 'admin') {
-      // Default to 100% for admins if no profile exists
-      agentSplit = 100;
-      bSplit = 0;
-    }
-
-    // Check for transaction type overrides
-    const hasOverride = !!(overrides && overrides[formData.propertyType]);
-    if (hasOverride) {
-      agentSplit = overrides[formData.propertyType].agentSplit;
-      bSplit = overrides[formData.propertyType].brokerSplit;
-      // overrides do not naturally override mentor program unless specified, but mentor split remains.
-    }
-
-    // Net portion remaining to Moving Texas Realty after co-broker split
-    const netToMtr = formData.propertyType === 'Lease'
-      ? Math.max(0, gross - coBrokerSplitAmount)
-      : gross;
-
-    if (formData.propertyType === 'Lease') {
-      if (netToMtr <= 800) {
-        agentGross = netToMtr;
-        brokerSplit = 0;
-        mentorSplitAmount = 0;
-      } else {
-        // Calculate the standard split first on the net portion remaining to Moving Texas Realty
-        if (splitType === 'percentage' || hasOverride) {
-          brokerSplit = netToMtr * (bSplit / 100);
-          agentGross = netToMtr * (agentSplit / 100);
-          mentorSplitAmount = isMentorActive ? netToMtr * (mentorSplit / 100) : 0;
-        } else {
-          // Flat split logic
-          brokerSplit = bSplit;
-          mentorSplitAmount = isMentorActive ? netToMtr * (mentorSplit / 100) : 0;
-          agentGross = netToMtr - bSplit - mentorSplitAmount;
-        }
-
-        // Check if agent's share is less than the $800 guarantee,
-        // adjustment is subtracted from the broker split to guarantee agent receives $800
-        if (agentGross < 800) {
-          const deficiency = 800 - agentGross;
-          agentGross = 800;
-          brokerSplit = Math.max(0, brokerSplit - deficiency);
-        }
-      }
-    } else {
-      // Non-lease transactions
-      if (splitType === 'percentage' || hasOverride) {
-        brokerSplit = netToMtr * (bSplit / 100);
-        agentGross = netToMtr * (agentSplit / 100);
-        mentorSplitAmount = isMentorActive ? netToMtr * (mentorSplit / 100) : 0;
-      } else {
-        // Flat split logic
-        brokerSplit = bSplit;
-        mentorSplitAmount = isMentorActive ? netToMtr * (mentorSplit / 100) : 0;
-        agentGross = netToMtr - bSplit - mentorSplitAmount;
-      }
-    }
-
-    // Owner Agent Logic: "Agents who are the property owner may select to only pay the split to the brokerage and not to themselves."
-    if (formData.isOwnerAgent && !formData.payAgent) {
-      agentGross = 0;
-    }
-
-    // Apply Agent Cap calculation!
-    const capAmount = profile?.commissionProfile?.capAmount !== undefined 
-      ? profile.commissionProfile.capAmount 
-      : 15000;
-
-    // Only apply capping if brokerSplit is greater than 0 and agent is not inexperienced
-    if (brokerSplit > 0 && !isInexperienced) {
-      if (ytdSplitPaid >= capAmount) {
-        // Agent is fully capped: no more broker split!
-        brokerSplit = 0;
-        agentGross = (formData.isOwnerAgent && !formData.payAgent) ? 0 : netToMtr - mentorSplitAmount;
-      } else if (ytdSplitPaid + brokerSplit > capAmount) {
-        // This transaction will cap the agent!
-        const remainingToCap = capAmount - ytdSplitPaid;
-        brokerSplit = remainingToCap;
-        agentGross = (formData.isOwnerAgent && !formData.payAgent) ? 0 : netToMtr - remainingToCap - mentorSplitAmount;
-      }
-    }
-
-    setCalc({
-      baseCommission: Number(baseCommission.toFixed(2)),
-      grossCommission: Number(gross.toFixed(2)),
-      brokerSplitAmount: Number(brokerSplit.toFixed(2)),
-      agentGrossAmount: Number(agentGross.toFixed(2)),
-      mentorSplitAmount: Number(mentorSplitAmount.toFixed(2)),
-      coBrokerSplitAmount: Number(coBrokerSplitAmount.toFixed(2)),
-      referralAmount: Number(referralAmount.toFixed(2)),
-      bonusAmount: Number(bonusAmount.toFixed(2)),
-      rebateAmount: Number(rebateAmount.toFixed(2)),
-    });
+    const calculated = calculateCDASplit(formData, profile, ytdSplitPaid);
+    setCalc(calculated);
   }, [formData, profile, ytdSplitPaid]);
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -464,7 +301,9 @@ export default function CreateRequest() {
           title: notifTitle,
           message: notifMsg,
           requestId: docId,
+          agentId: profile.uid,
           agentName: profile.name,
+          agentEmail: profile.email,
           createdAt: new Date().toISOString(),
           readBy: [],
           recipientRole: 'admin',

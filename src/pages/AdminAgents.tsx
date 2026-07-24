@@ -35,7 +35,10 @@ export default function AdminAgents() {
     agentSplit: 80 as number | undefined,
     brokerSplit: 20 as number | undefined,
     capAmount: 15000 as number | undefined,
-    isInexperienced: false
+    isInexperienced: false,
+    enablePostCapTransactionFee: false,
+    postCapTransactionFee: 200 as number | undefined,
+    postCapLeaseTransactionFee: 50 as number | undefined
   });
 
   useEffect(() => {
@@ -108,6 +111,9 @@ export default function AdminAgents() {
           mentorActive: newAgent.isInexperienced,
           isInexperienced: newAgent.isInexperienced,
           capAmount: newAgent.isInexperienced ? 0 : newAgent.capAmount,
+          enablePostCapTransactionFee: newAgent.enablePostCapTransactionFee,
+          postCapTransactionFee: newAgent.postCapTransactionFee ?? 200,
+          postCapLeaseTransactionFee: newAgent.postCapLeaseTransactionFee ?? 50,
           yearlyProduction: 0
         }
       });
@@ -121,7 +127,10 @@ export default function AdminAgents() {
         agentSplit: undefined as number | undefined,
         brokerSplit: undefined as number | undefined,
         capAmount: undefined as number | undefined,
-        isInexperienced: false
+        isInexperienced: false,
+        enablePostCapTransactionFee: false,
+        postCapTransactionFee: 200,
+        postCapLeaseTransactionFee: 50
       });
     } catch (error) {
       handleFirestoreError(error, OperationType.WRITE, 'users');
@@ -162,7 +171,10 @@ export default function AdminAgents() {
               agentSplit: 80,
               brokerSplit: 20,
               capAmount: 15000,
-              isInexperienced: false
+              isInexperienced: false,
+              enablePostCapTransactionFee: false,
+              postCapTransactionFee: 200,
+              postCapLeaseTransactionFee: 50
             });
             setShowAddModal(true);
           }}
@@ -310,6 +322,68 @@ export default function AdminAgents() {
                     <label htmlFor="newIsInexperienced" className="block text-xs font-bold text-slate-700 cursor-pointer">Inexperienced Agent (Mentorship Program)</label>
                     <p className="text-[10px] text-slate-500 font-medium">Auto-applies 70/20/10 split (agent/broker/mentor) and exempts agent from Yearly Cap constraints.</p>
                   </div>
+                </div>
+
+                <div className="space-y-3 p-4 bg-slate-50 border border-slate-200 rounded-2xl">
+                  <div className="flex items-start gap-3">
+                    <input
+                      type="checkbox"
+                      id="newEnablePostCap"
+                      className="mt-1 w-5 h-5 rounded border-slate-300 text-blue-600 focus:ring-blue-500 cursor-pointer"
+                      checked={newAgent.enablePostCapTransactionFee}
+                      onChange={e => setNewAgent({ ...newAgent, enablePostCapTransactionFee: e.target.checked })}
+                    />
+                    <div>
+                      <label htmlFor="newEnablePostCap" className="block text-xs font-bold text-slate-700 cursor-pointer">
+                        Enable Post-Cap Transaction Fee
+                      </label>
+                      <p className="text-[10px] text-slate-500 font-medium">
+                        Charges a per-transaction fee after agent reaches yearly cap ($800 lease guarantee applies).
+                      </p>
+                    </div>
+                  </div>
+
+                  {newAgent.enablePostCapTransactionFee && (
+                    <div className="grid grid-cols-2 gap-3 pt-2 border-t border-slate-200">
+                      <div>
+                        <label className="block text-[10px] font-black text-slate-400 uppercase tracking-tight mb-1">
+                          Standard Fee ($)
+                        </label>
+                        <input
+                          type="number"
+                          min="0"
+                          step="any"
+                          placeholder="200"
+                          className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-xs font-bold outline-none focus:ring-2 focus:ring-blue-500 text-slate-900"
+                          value={newAgent.postCapTransactionFee !== undefined ? newAgent.postCapTransactionFee : ''}
+                          onChange={e => setNewAgent({
+                            ...newAgent,
+                            postCapTransactionFee: e.target.value === '' ? undefined : parseFloat(e.target.value)
+                          })}
+                        />
+                        <p className="text-[9px] text-slate-400 mt-0.5">Home, Land, Commercial, etc.</p>
+                      </div>
+
+                      <div>
+                        <label className="block text-[10px] font-black text-slate-400 uppercase tracking-tight mb-1">
+                          Lease Fee ($)
+                        </label>
+                        <input
+                          type="number"
+                          min="0"
+                          step="any"
+                          placeholder="50"
+                          className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-xs font-bold outline-none focus:ring-2 focus:ring-blue-500 text-slate-900"
+                          value={newAgent.postCapLeaseTransactionFee !== undefined ? newAgent.postCapLeaseTransactionFee : ''}
+                          onChange={e => setNewAgent({
+                            ...newAgent,
+                            postCapLeaseTransactionFee: e.target.value === '' ? undefined : parseFloat(e.target.value)
+                          })}
+                        />
+                        <p className="text-[9px] text-slate-400 mt-0.5">Leases ($800 guarantee applies)</p>
+                      </div>
+                    </div>
+                  )}
                 </div>
 
               </div>
@@ -550,7 +624,7 @@ export default function AdminAgents() {
 
                   <div className="space-y-4">
                     <h4 className="text-sm font-bold text-slate-400 uppercase tracking-wider flex items-center gap-2">
-                      <Target size={14} /> Yearly Cap
+                      <Target size={14} /> Yearly Cap & Post-Cap Fee
                     </h4>
                     <div>
                       <label className="block text-xs font-bold text-slate-500 mb-1">Cap Amount ($)</label>
@@ -561,13 +635,91 @@ export default function AdminAgents() {
                       ) : (
                         <input 
                           type="number"
-                          className="w-full bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-sm outline-none"
-                          value={editForm.commissionProfile?.capAmount || 15000}
+                          className="w-full bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-sm outline-none font-bold text-slate-800"
+                          value={editForm.commissionProfile?.capAmount !== undefined ? editForm.commissionProfile.capAmount : 15000}
                           onChange={e => setEditForm({
                             ...editForm, 
-                            commissionProfile: { ...editForm.commissionProfile, capAmount: parseFloat(e.target.value) }
+                            commissionProfile: { ...editForm.commissionProfile, capAmount: parseFloat(e.target.value) || 0 }
                           })}
                         />
+                      )}
+                    </div>
+
+                    <div className="pt-3 border-t border-slate-100 space-y-3">
+                      <div className="flex items-start gap-2.5">
+                        <input
+                          type="checkbox"
+                          id={`editEnablePostCap_${editingId}`}
+                          className="mt-0.5 w-4 h-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500 cursor-pointer"
+                          checked={!!editForm.commissionProfile?.enablePostCapTransactionFee}
+                          onChange={e => {
+                            const enabled = e.target.checked;
+                            const comm = editForm.commissionProfile || {};
+                            setEditForm({
+                              ...editForm,
+                              commissionProfile: {
+                                ...comm,
+                                enablePostCapTransactionFee: enabled,
+                                postCapTransactionFee: comm.postCapTransactionFee !== undefined ? comm.postCapTransactionFee : 200,
+                                postCapLeaseTransactionFee: comm.postCapLeaseTransactionFee !== undefined ? comm.postCapLeaseTransactionFee : 50,
+                              }
+                            });
+                          }}
+                        />
+                        <div>
+                          <label htmlFor={`editEnablePostCap_${editingId}`} className="text-xs font-bold text-slate-800 cursor-pointer">
+                            Enable Post-Cap Transaction Fee
+                          </label>
+                          <p className="text-[10px] text-slate-500 font-medium leading-snug">
+                            Charges a fee per deal once agent reaches cap ($800 lease guarantee applies).
+                          </p>
+                        </div>
+                      </div>
+
+                      {!!editForm.commissionProfile?.enablePostCapTransactionFee && (
+                        <div className="grid grid-cols-2 gap-2.5 pt-1">
+                          <div>
+                            <label className="block text-[10px] font-black text-slate-400 uppercase tracking-tight mb-1">
+                              Standard Fee ($)
+                            </label>
+                            <input
+                              type="number"
+                              min="0"
+                              step="any"
+                              className="w-full bg-slate-50 border border-slate-200 rounded-lg px-2.5 py-1.5 text-xs font-bold outline-none focus:ring-2 focus:ring-blue-500 text-slate-800"
+                              value={editForm.commissionProfile?.postCapTransactionFee ?? 200}
+                              onChange={e => setEditForm({
+                                ...editForm,
+                                commissionProfile: {
+                                  ...editForm.commissionProfile,
+                                  postCapTransactionFee: parseFloat(e.target.value) || 0
+                                }
+                              })}
+                            />
+                            <p className="text-[9px] text-slate-400 mt-0.5">Homes, Land, Commercial</p>
+                          </div>
+
+                          <div>
+                            <label className="block text-[10px] font-black text-slate-400 uppercase tracking-tight mb-1">
+                              Lease Fee ($)
+                            </label>
+                            <input
+                              type="number"
+                              min="0"
+                              step="any"
+                              className="w-full bg-slate-50 border border-slate-200 rounded-lg px-2.5 py-1.5 text-xs font-bold outline-none focus:ring-2 focus:ring-blue-500 text-slate-800"
+                              value={editForm.commissionProfile?.postCapLeaseTransactionFee ?? 50}
+                              onChange={e => setEditForm({
+                                ...editForm,
+                                commissionProfile: {
+                                  ...editForm.commissionProfile,
+                                  postCapLeaseTransactionFee: parseFloat(e.target.value) || 0
+                                }
+                              })}
+                            />
+                            <p className="text-[9px] text-slate-400 mt-0.5">Lease deals</p>
+                          </div>
+                        </div>
                       )}
                     </div>
                   </div>
@@ -699,7 +851,14 @@ export default function AdminAgents() {
                     {agent.commissionProfile?.isInexperienced ? (
                       <span className="text-xs font-black text-emerald-600 bg-emerald-50 px-2 py-1 rounded-full uppercase tracking-wider">Exempt</span>
                     ) : (
-                      <p className="font-bold text-slate-700">${(agent.commissionProfile?.capAmount || 15000).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</p>
+                      <div>
+                        <p className="font-bold text-slate-700">${(agent.commissionProfile?.capAmount || 15000).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</p>
+                        {agent.commissionProfile?.enablePostCapTransactionFee && (
+                          <span className="block text-[9px] font-black text-amber-700 bg-amber-50 border border-amber-200 px-1.5 py-0.5 rounded leading-none mt-1 uppercase tracking-tight">
+                            Post-Cap: ${agent.commissionProfile?.postCapTransactionFee ?? 200} / ${agent.commissionProfile?.postCapLeaseTransactionFee ?? 50} (Lease)
+                          </span>
+                        )}
+                      </div>
                     )}
                   </div>
                   <button 
