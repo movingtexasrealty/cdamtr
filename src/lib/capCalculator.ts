@@ -316,16 +316,30 @@ export function calculateCDASplit(
   };
 }
 
-export async function recalculateAndPersistCDACaps() {
+export async function recalculateAndPersistCDACaps(targetUid?: string) {
   try {
-    const { doc, updateDoc } = await import('firebase/firestore');
-    const cdaSnap = await getDocs(collection(db, 'cdaRequests'));
+    const { doc, updateDoc, getDocs, collection, query, where } = await import('firebase/firestore');
+    const { auth } = await import('../firebase');
+
+    const currentUser = auth.currentUser;
+    const isUserAdmin = currentUser?.email?.toLowerCase() === 'movingtexasrealty@gmail.com';
+
+    let cdaQuery: any;
+    if (isUserAdmin) {
+      cdaQuery = collection(db, 'cdaRequests');
+    } else {
+      const activeUid = targetUid || currentUser?.uid;
+      if (!activeUid) return;
+      cdaQuery = query(collection(db, 'cdaRequests'), where('agentId', '==', activeUid));
+    }
+
+    const cdaSnap = await getDocs(cdaQuery);
     const salesSnap = await getDocs(collection(db, 'salesHistory'));
     const usersSnap = await getDocs(collection(db, 'users'));
 
-    const allCda: any[] = cdaSnap.docs.map(d => ({ id: d.id, ...d.data() }));
-    const allSales: any[] = salesSnap.docs.map(d => ({ id: d.id, ...d.data() }));
-    const allUsers: any[] = usersSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+    const allCda: any[] = cdaSnap.docs.map(d => ({ id: d.id, ...(d.data() as any) }));
+    const allSales: any[] = salesSnap.docs.map(d => ({ id: d.id, ...(d.data() as any) }));
+    const allUsers: any[] = usersSnap.docs.map(d => ({ id: d.id, ...(d.data() as any) }));
 
     const approvedCDAs = allCda.filter(r => r.status === 'approved');
 
@@ -397,10 +411,13 @@ export async function recalculateAndPersistCDACaps() {
 
         const currentBrokerSplit = Number(req.brokerSplitAmount ?? req.companySplitAmount ?? 0);
         const currentAgentGross = Number(req.agentGrossAmount ?? 0);
+        const matchedUid = matchedUser?.uid || matchedUser?.id;
+        const needsAgentIdUpdate = matchedUid && req.agentId !== matchedUid;
 
-        if (Math.abs(currentBrokerSplit - newCalc.brokerSplitAmount) > 0.01 || Math.abs(currentAgentGross - newCalc.agentGrossAmount) > 0.01) {
+        if (needsAgentIdUpdate || Math.abs(currentBrokerSplit - newCalc.brokerSplitAmount) > 0.01 || Math.abs(currentAgentGross - newCalc.agentGrossAmount) > 0.01) {
           await updateDoc(doc(db, 'cdaRequests', req.id), {
-            ...newCalc
+            ...newCalc,
+            ...(needsAgentIdUpdate ? { agentId: matchedUid } : {})
           });
         }
 

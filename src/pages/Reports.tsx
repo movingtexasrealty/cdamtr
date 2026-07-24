@@ -4,9 +4,11 @@
  */
 
 import { useState, useEffect, useRef } from 'react';
+import { useAuth } from '../AuthContext';
 import { 
   collection, 
   query, 
+  where,
   onSnapshot, 
   getDocs, 
   addDoc, 
@@ -162,6 +164,7 @@ function parseCSVRows(csvText: string) {
 }
 
 export default function Reports() {
+  const { profile, isAdmin } = useAuth();
   const [salesHistory, setSalesHistory] = useState<any[]>([]);
   const [cdaRequests, setCdaRequests] = useState<any[]>([]);
   const [importing, setImporting] = useState(false);
@@ -199,8 +202,13 @@ export default function Reports() {
       handleFirestoreError(error, OperationType.GET, 'users');
     });
 
-    // Fetch all cdaRequests
-    const unsubCDAs = onSnapshot(collection(db, 'cdaRequests'), (snapshot) => {
+    // Fetch cdaRequests
+    const cdaRef = collection(db, 'cdaRequests');
+    const cdaQuery = isAdmin 
+      ? cdaRef 
+      : (profile?.uid ? query(cdaRef, where('agentId', '==', profile.uid)) : cdaRef);
+
+    const unsubCDAs = onSnapshot(cdaQuery, (snapshot) => {
       setCdaRequests(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
     }, (error) => {
       handleFirestoreError(error, OperationType.GET, 'cdaRequests');
@@ -211,7 +219,7 @@ export default function Reports() {
       unsubAgents(); 
       unsubCDAs();
     };
-  }, []);
+  }, [profile, isAdmin]);
 
   const processCSVText = async (csvText: string) => {
     setImporting(true);

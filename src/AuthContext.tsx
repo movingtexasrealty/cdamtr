@@ -147,6 +147,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
               };
               
               await setDoc(userDocRef, newProfile);
+              
+              // Migrate any CDA requests referencing preAuthDoc.id to firebaseUser.uid
+              try {
+                const oldPreauthId = preAuthDoc.id;
+                const cdaPreauthQuery = query(collection(db, 'cdaRequests'), where('agentId', '==', oldPreauthId));
+                const cdaPreauthSnap = await getDocs(cdaPreauthQuery);
+                for (const docItem of cdaPreauthSnap.docs) {
+                  await updateDoc(docItem.ref, { agentId: firebaseUser.uid });
+                }
+              } catch (e) {
+                console.error('Error migrating preauth CDA requests:', e);
+              }
+
               // Delete pre-auth entry so it doesn't stay as a "ghost"
               if (preAuthDoc.id.startsWith('preauth_')) {
                 await deleteDoc(preAuthDoc.ref);

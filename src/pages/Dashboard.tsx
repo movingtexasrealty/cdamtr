@@ -49,7 +49,7 @@ export default function Dashboard() {
     if (!profile) return;
 
     // Auto recalculate caps and persist to ensure approved CDAs are properly capped
-    recalculateAndPersistCDACaps();
+    recalculateAndPersistCDACaps(profile.uid);
 
     let cdaList: any[] = [];
     let salesList: any[] = [];
@@ -224,7 +224,12 @@ export default function Dashboard() {
       setMonthlyData(monthlyValues);
     };
 
-    const unsubCDA = onSnapshot(collection(db, 'cdaRequests'), (snapshot) => {
+    const cdaRef = collection(db, 'cdaRequests');
+    const cdaQuery = isAdmin 
+      ? cdaRef 
+      : query(cdaRef, where('agentId', '==', profile.uid));
+
+    const unsubCDA = onSnapshot(cdaQuery, (snapshot) => {
       cdaList = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
       computeAll();
     }, (err) => handleFirestoreError(err, OperationType.GET, 'cdaRequests'));
