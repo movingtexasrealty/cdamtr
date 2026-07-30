@@ -215,7 +215,7 @@ export default function CreateRequest() {
 
     if (!formData.commissionRate || formData.commissionRate <= 0) {
       setError(formData.rateType === 'percentage' 
-        ? 'Form submission failed: Please enter a valid Commission Rate (%) greater than 0%.' 
+        ? 'Form submission failed: Please enter a valid Compensation Rate (%) greater than 0%.' 
         : 'Form submission failed: Please enter a valid Set Fee ($) greater than $0.'
       );
       return;
@@ -231,7 +231,7 @@ export default function CreateRequest() {
         return;
       }
       if (calc.coBrokerSplitAmount >= calc.grossCommission) {
-        setError(`Form submission failed: The calculated Buyer's Broker Split ($${calc.coBrokerSplitAmount.toFixed(2)}) cannot exceed or equal the Gross Commission ($${calc.grossCommission.toFixed(2)}). Please adjust the split percentage or listing commission rate.`);
+        setError(`Form submission failed: The calculated Buyer's Broker Split ($${calc.coBrokerSplitAmount.toFixed(2)}) cannot exceed or equal the Gross Compensation ($${calc.grossCommission.toFixed(2)}). Please adjust the split percentage or listing compensation rate.`);
         return;
       }
     }
@@ -496,7 +496,7 @@ export default function CreateRequest() {
 
             <div>
               <div className="flex justify-between items-center mb-2">
-                <label className="text-sm font-semibold text-slate-700">Commission Rate / Set Fee</label>
+                <label className="text-sm font-semibold text-slate-700">Compensation Rate / Set Fee</label>
                 <div className="flex items-center gap-2 bg-slate-100 border border-slate-200 rounded-full px-2.5 py-1 select-none">
                   <span className={`text-xs font-black transition-all ${formData.rateType === 'percentage' ? 'text-blue-600 scale-110' : 'text-slate-400'}`}>%</span>
                   <button
@@ -779,7 +779,7 @@ export default function CreateRequest() {
           <div className="mt-8 p-6 bg-slate-50 rounded-2xl border border-slate-100 space-y-4">
             <div className={`grid grid-cols-1 md:grid-cols-${calc.mentorSplitAmount > 0 ? '4' : '3'} gap-6`}>
               <div>
-                <p className="text-xs font-bold text-slate-500 uppercase mb-1">Gross Commission</p>
+                <p className="text-xs font-bold text-slate-500 uppercase mb-1">Gross Compensation</p>
                 <p className="text-2xl font-bold text-slate-900">${calc.grossCommission.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</p>
               </div>
               <div>
@@ -827,7 +827,7 @@ export default function CreateRequest() {
               />
               <div>
                 <label htmlFor="isOwnerAgent" className="font-bold text-slate-800">I am the Property Owner</label>
-                <p className="text-sm text-slate-500">Checking this allows you to specify if you want to receive your commission portion.</p>
+                <p className="text-sm text-slate-500">Checking this allows you to specify if you want to receive your compensation portion.</p>
               </div>
             </div>
 

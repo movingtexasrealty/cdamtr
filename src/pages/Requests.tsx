@@ -147,6 +147,7 @@ export default function Requests() {
       await updateDoc(doc(db, 'cdaRequests', id), { 
         status, 
         approvedAt: status === 'approved' ? new Date().toISOString() : null,
+        ...(status === 'approved' && profile?.role === 'admin' && profile?.signatureImage ? { brokerSignatureUrl: profile.signatureImage } : {}),
         ...calcUpdates,
         ...additionalData
       });
@@ -291,7 +292,7 @@ export default function Requests() {
               <tr className="bg-slate-50/50 border-b border-slate-200">
                 <th className="px-6 py-4 text-xs font-bold text-slate-500 uppercase tracking-wider">Property / Date</th>
                 <th className="px-6 py-4 text-xs font-bold text-slate-500 uppercase tracking-wider">Agent</th>
-                <th className="px-6 py-4 text-xs font-bold text-slate-500 uppercase tracking-wider">Price / Commission</th>
+                <th className="px-6 py-4 text-xs font-bold text-slate-500 uppercase tracking-wider">Price / Compensation</th>
                 <th className="px-6 py-4 text-xs font-bold text-slate-500 uppercase tracking-wider">Status</th>
                 <th className="px-6 py-4 text-xs font-bold text-slate-500 uppercase tracking-wider text-right">Actions</th>
               </tr>

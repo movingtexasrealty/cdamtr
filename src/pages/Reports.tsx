@@ -890,7 +890,7 @@ export default function Reports() {
                       <th className="pb-3 text-xs font-bold text-slate-400 uppercase tracking-wider">Agent</th>
                       <th className="pb-3 text-xs font-bold text-slate-400 uppercase tracking-wider text-right">Units</th>
                       <th className="pb-3 text-xs font-bold text-slate-400 uppercase tracking-wider text-right">Volume</th>
-                      <th className="pb-3 text-xs font-bold text-slate-400 uppercase tracking-wider text-right">Gross Comm</th>
+                      <th className="pb-3 text-xs font-bold text-slate-400 uppercase tracking-wider text-right">Gross Comp</th>
                       <th className="pb-3 text-xs font-bold text-slate-400 uppercase tracking-wider text-right">Split Paid</th>
                       <th className="pb-3 text-xs font-bold text-slate-400 uppercase tracking-wider text-right">Cap Status</th>
                     </tr>
@@ -1045,7 +1045,7 @@ export default function Reports() {
             <div className="mb-6 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
               <div>
                 <h3 className="text-lg font-bold text-slate-800">CNA Section 2: Professional Services Table</h3>
-                <p className="text-xs text-slate-400">Values represent <strong className="font-bold">Gross Commissions BEFORE splits</strong> with agents or salespeople.</p>
+                <p className="text-xs text-slate-400">Values represent <strong className="font-bold">Gross Compensations BEFORE splits</strong> with agents or salespeople.</p>
               </div>
               <div className="text-xs text-emerald-600 font-bold bg-emerald-50 px-3 py-1 rounded-full border border-emerald-100 flex items-center gap-1.5 print:hidden">
                 <Check size={14} /> Correct Lease / Co-Broker calculation applied

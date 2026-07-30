@@ -9,7 +9,7 @@ import { useRef, useState, useEffect } from 'react';
 import { Mail, Download, X, CheckCircle, MapPin, Phone, XCircle, AlertCircle } from 'lucide-react';
 import { useAuth } from '../AuthContext';
 import { db } from '../firebase';
-import { doc, updateDoc } from 'firebase/firestore';
+import { doc, updateDoc, collection, query, where, getDocs } from 'firebase/firestore';
 
 const formatPhone = (phone: string) => {
   if (!phone) return 'N/A';
@@ -50,10 +50,42 @@ export default function CDAPreview({ request, onClose, onApproved, onRejected, s
   
   const [payEntireToBroker, setPayEntireToBroker] = useState(!!request.payEntireToBroker);
   const [activeTab, setActiveTab] = useState<'cda' | 'wiring'>('cda');
+  const [brokerSignature, setBrokerSignature] = useState<string | null>(request.brokerSignatureUrl || profile?.signatureImage || null);
 
   useEffect(() => {
     setPayEntireToBroker(!!request.payEntireToBroker);
   }, [request.payEntireToBroker]);
+
+  useEffect(() => {
+    let isMounted = true;
+
+    async function resolveBrokerSignature() {
+      if (request.brokerSignatureUrl) {
+        if (isMounted) setBrokerSignature(request.brokerSignatureUrl);
+        return;
+      }
+      if (profile?.role === 'admin' && profile?.signatureImage) {
+        if (isMounted) setBrokerSignature(profile.signatureImage);
+        return;
+      }
+      try {
+        const q = query(collection(db, 'users'), where('role', '==', 'admin'));
+        const querySnap = await getDocs(q);
+        if (!querySnap.empty) {
+          const adminWithSig = querySnap.docs.find(d => d.data().signatureImage);
+          const sig = adminWithSig ? adminWithSig.data().signatureImage : querySnap.docs[0].data().signatureImage || null;
+          if (isMounted && sig) {
+            setBrokerSignature(sig);
+          }
+        }
+      } catch (err) {
+        console.error('Error fetching broker signature:', err);
+      }
+    }
+
+    resolveBrokerSignature();
+    return () => { isMounted = false; };
+  }, [request.brokerSignatureUrl, profile?.role, profile?.signatureImage]);
 
   const handleSignatureUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -66,6 +98,7 @@ export default function CDAPreview({ request, onClose, onApproved, onRejected, s
         await updateDoc(doc(db, 'users', profile.uid), {
           signatureImage: base64String
         });
+        setBrokerSignature(base64String);
       } catch (err) {
         console.error('Failed to update signature image:', err);
         alert('Could not save the signature image in your profile. Please try again.');
@@ -81,8 +114,86 @@ export default function CDAPreview({ request, onClose, onApproved, onRejected, s
       await updateDoc(doc(db, 'users', profile.uid), {
         signatureImage: null
       });
+      setBrokerSignature(null);
     } catch (err) {
       console.error('Failed to remove signature image:', err);
+    }
+  };
+
+  const prepareClonedDoc = (clonedDoc: Document, selector: string) => {
+    // 1. Convert all oklch / oklab / color-mix expressions in <style> tags to browser-computed rgb/rgba
+    const dummy = clonedDoc.createElement('div');
+    clonedDoc.body.appendChild(dummy);
+
+    clonedDoc.querySelectorAll('style').forEach(styleTag => {
+      if (!styleTag.textContent) return;
+
+      let css = styleTag.textContent.replace(/color-mix\([^;}]*\)/gi, 'rgba(0,0,0,0.05)');
+
+      css = css.replace(/(oklab|oklch)\([^)]+\)/gi, (match) => {
+        try {
+          dummy.style.color = match;
+          const computed = window.getComputedStyle(dummy).color;
+          if (computed && !computed.includes('okl') && !computed.includes('color-mix')) {
+            return computed;
+          }
+        } catch (e) {
+          // fallback
+        }
+        return 'rgb(0,0,0)';
+      });
+
+      styleTag.textContent = css;
+    });
+
+    clonedDoc.body.removeChild(dummy);
+
+    // 2. Set target container outer dimensions and flex structure for A4 export
+    const el = clonedDoc.querySelector(selector);
+    if (el instanceof HTMLElement) {
+      el.style.position = 'relative'; 
+      el.style.width = '794px'; 
+      el.style.minWidth = '794px';
+      el.style.maxWidth = '794px';
+      el.style.height = '1123px';
+      el.style.minHeight = '1123px';
+      el.style.maxHeight = '1123px';
+      el.style.margin = '0 auto';
+      el.style.boxShadow = 'none';
+      el.style.transform = 'none';
+      el.style.boxSizing = 'border-box';
+      el.style.display = 'flex';
+      el.style.flexDirection = 'column';
+      el.style.justifyContent = 'flex-start';
+
+      // Ensure explicit dimensions on images inside the cloned DOM
+      const watermark = el.querySelector('.cda-logo-watermark') as HTMLElement;
+      if (watermark) {
+        watermark.style.opacity = '0.03';
+        watermark.style.width = '500px';
+        watermark.style.maxWidth = '500px';
+        watermark.style.height = 'auto';
+      }
+
+      const mainLogos = el.querySelectorAll('.cda-logo-main') as NodeListOf<HTMLElement>;
+      mainLogos.forEach(logo => {
+        logo.style.height = '52px';
+        logo.style.maxHeight = '52px';
+        logo.style.width = 'auto';
+        logo.style.opacity = '1';
+      });
+
+      const wireImages = el.querySelectorAll('img') as NodeListOf<HTMLImageElement>;
+      wireImages.forEach(img => {
+        if (img.src && img.src.includes('moving_texas_realty_logo_dark')) {
+          img.style.height = '64px';
+          img.style.maxHeight = '64px';
+          img.style.width = 'auto';
+          img.style.margin = '0 auto 8px auto';
+          img.style.display = 'block';
+          img.style.opacity = '1';
+        }
+      });
     }
   };
 
@@ -94,7 +205,7 @@ export default function CDAPreview({ request, onClose, onApproved, onRejected, s
     window.scrollTo(0, 0);
 
     // Add a small delay to ensure any dynamic content/images are settled
-    await new Promise(resolve => setTimeout(resolve, 800));
+    await new Promise(resolve => setTimeout(resolve, 600));
 
     try {
       const element = printRef.current;
@@ -107,93 +218,7 @@ export default function CDAPreview({ request, onClose, onApproved, onRejected, s
         backgroundColor: '#ffffff',
         imageTimeout: 15000,
         onclone: (clonedDoc) => {
-          const el = clonedDoc.querySelector('[data-cda-content]');
-          if (el instanceof HTMLElement) {
-            // 1. Force the container to A4-ish dimensions in the clone
-            el.style.display = 'block';
-            el.style.position = 'relative'; 
-            el.style.width = '794px'; 
-            el.style.minWidth = '794px';
-            el.style.height = 'auto';
-            el.style.minHeight = 'auto';
-            el.style.maxHeight = 'none';
-            el.style.margin = '0';
-            el.style.boxShadow = 'none';
-            el.style.transform = 'none';
-            
-            // 2. Transfer computed styles to inline styles for ALL children
-            const allElements = Array.from(el.querySelectorAll('*')).concat([el]);
-            allElements.forEach(node => {
-              const item = node as HTMLElement;
-              
-              const style = window.getComputedStyle(item);
-              const sanitizeColor = (color: string) => {
-                if (color.includes('oklch') || color.includes('oklab')) return '#000000';
-                return color;
-              };
-
-              item.style.color = sanitizeColor(style.color);
-              item.style.backgroundColor = style.backgroundColor.includes('okl') ? 'transparent' : style.backgroundColor;
-              item.style.borderColor = sanitizeColor(style.borderColor);
-              item.style.fontSize = style.fontSize;
-              item.style.fontWeight = style.fontWeight;
-              item.style.fontFamily = "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif";
-              item.style.lineHeight = style.lineHeight;
-              item.style.padding = style.padding;
-              item.style.margin = style.margin;
-              item.style.display = style.display;
-              item.style.position = style.position;
-              item.style.width = style.width;
-              item.style.height = style.height;
-              item.style.top = style.top;
-              item.style.bottom = style.bottom;
-              item.style.left = style.left;
-              item.style.right = style.right;
-              item.style.borderWidth = style.borderWidth;
-              item.style.borderStyle = style.borderStyle;
-              item.style.borderRadius = style.borderRadius;
-              item.style.opacity = style.opacity;
-              item.style.textAlign = style.textAlign;
-              item.style.boxSizing = 'border-box';
-
-              item.style.flexDirection = style.flexDirection;
-              item.style.flexWrap = style.flexWrap;
-              item.style.flexGrow = style.flexGrow;
-              item.style.flexShrink = style.flexShrink;
-              item.style.flexBasis = style.flexBasis;
-              item.style.alignItems = style.alignItems;
-              item.style.justifyContent = style.justifyContent;
-              item.style.alignSelf = style.alignSelf;
-              item.style.justifySelf = style.justifySelf;
-              item.style.gap = style.gap;
-              item.style.rowGap = style.rowGap;
-              item.style.columnGap = style.columnGap;
-
-              item.style.gridTemplateColumns = style.gridTemplateColumns;
-              item.style.gridTemplateRows = style.gridTemplateRows;
-              item.style.gridColumn = style.gridColumn;
-              item.style.gridRow = style.gridRow;
-              item.style.gridArea = style.gridArea;
-              item.style.gridAutoFlow = style.gridAutoFlow;
-
-              if (item instanceof HTMLImageElement) {
-                item.style.display = 'block';
-                item.style.maxWidth = '100%';
-                if (item.classList.contains('cda-logo-main')) {
-                  item.style.height = '64px';
-                  item.style.width = 'auto';
-                }
-                if (item.classList.contains('cda-logo-watermark')) {
-                  item.style.width = '600px';
-                  item.style.height = 'auto';
-                  item.style.opacity = '0.03';
-                }
-              }
-            });
-
-            const styles = clonedDoc.querySelectorAll('style, link[rel="stylesheet"]');
-            styles.forEach(s => s.remove());
-          }
+          prepareClonedDoc(clonedDoc, '[data-cda-content]');
         }
       });
       
@@ -236,7 +261,7 @@ export default function CDAPreview({ request, onClose, onApproved, onRejected, s
     if (!wirePrintRef.current) return;
     const originalScrollPos = window.scrollY;
     window.scrollTo(0, 0);
-    await new Promise(resolve => setTimeout(resolve, 800));
+    await new Promise(resolve => setTimeout(resolve, 600));
 
     try {
       const element = wirePrintRef.current;
@@ -248,46 +273,7 @@ export default function CDAPreview({ request, onClose, onApproved, onRejected, s
         backgroundColor: '#ffffff',
         imageTimeout: 15000,
         onclone: (clonedDoc) => {
-          const el = clonedDoc.querySelector('[data-wire-content]');
-          if (el instanceof HTMLElement) {
-            el.style.display = 'block';
-            el.style.position = 'relative'; 
-            el.style.width = '794px'; 
-            el.style.minWidth = '794px';
-            el.style.height = 'auto';
-            el.style.minHeight = 'auto';
-            el.style.maxHeight = 'none';
-            el.style.margin = '0';
-            el.style.boxShadow = 'none';
-            el.style.transform = 'none';
-
-            const allElements = Array.from(el.querySelectorAll('*')).concat([el]);
-            allElements.forEach(node => {
-              const item = node as HTMLElement;
-              const style = window.getComputedStyle(item);
-              const sanitizeColor = (color: string) => {
-                if (color.includes('oklch') || color.includes('oklab')) return '#000000';
-                return color;
-              };
-
-              item.style.color = sanitizeColor(style.color);
-              item.style.backgroundColor = style.backgroundColor.includes('okl') ? 'transparent' : style.backgroundColor;
-              item.style.borderColor = sanitizeColor(style.borderColor);
-              item.style.fontSize = style.fontSize;
-              item.style.fontWeight = style.fontWeight;
-              item.style.lineHeight = style.lineHeight;
-              item.style.padding = style.padding;
-              item.style.margin = style.margin;
-              item.style.display = style.display;
-              item.style.position = style.position;
-              item.style.width = style.width;
-              item.style.height = style.height;
-              item.style.boxSizing = 'border-box';
-            });
-
-            const styles = clonedDoc.querySelectorAll('style, link[rel="stylesheet"]');
-            styles.forEach(s => s.remove());
-          }
+          prepareClonedDoc(clonedDoc, '[data-wire-content]');
         }
       });
 
@@ -315,17 +301,22 @@ export default function CDAPreview({ request, onClose, onApproved, onRejected, s
       }
 
       const safeProperty = (request.propertyAddress || 'Transaction').split(',')[0].trim().replace(/[^a-z0-9]/gi, '_');
-      pdf.save(`Wiring_Instructions_-_${safeProperty}.pdf`);
+      const filename = `Wiring_Instructions_-_${safeProperty}.pdf`;
+
+      pdf.save(filename);
       window.scrollTo(0, originalScrollPos);
     } catch (error) {
-      console.error('Wiring PDF Error:', error);
-      alert('There was an error generating the Wiring Instructions PDF.');
+      console.error('Wiring Instructions PDF Generation Error:', error);
+      alert('There was an error generating the Wiring Instructions PDF. Please try again.');
     }
   };
 
   const handleApproveOnly = async () => {
     if (onApproved) {
-      await onApproved({ payEntireToBroker });
+      await onApproved({ 
+        payEntireToBroker,
+        brokerSignatureUrl: brokerSignature || profile?.signatureImage || null
+      });
     }
   };
 
@@ -425,7 +416,7 @@ export default function CDAPreview({ request, onClose, onApproved, onRejected, s
                       <p className="font-bold mb-1">Approval Workflow & Guidelines:</p>
                       <ol className="list-decimal ml-4 space-y-1 font-medium font-sans">
                         <li>Review the CDA details in the preview layout below.</li>
-                        <li>If the entire commission should be paid to the brokerage (agent/mentor omitted), activate the split override switch below.</li>
+                        <li>If the entire compensation should be paid to the brokerage (agent/mentor omitted), activate the split override switch below.</li>
                         <li>Click <span className="font-bold">"Approve Request & Lock Split"</span> to save and approve.</li>
                         <li>Once approved, you will unlock the final signed PDF download and mailing options.</li>
                       </ol>
@@ -440,7 +431,7 @@ export default function CDAPreview({ request, onClose, onApproved, onRejected, s
                         Administrative Split Override
                       </h4>
                       <p className="text-[11px] text-amber-700 font-medium">
-                        Enabling this forces 100% of the Gross Commission check to be written to Moving Texas Realty. The agent and mentor splits are completely hidden on the generated PDF.
+                        Enabling this forces 100% of the Gross Compensation check to be written to Moving Texas Realty. The agent and mentor splits are completely hidden on the generated PDF.
                       </p>
                     </div>
                     <label className="relative inline-flex items-center cursor-pointer select-none">
@@ -471,10 +462,10 @@ export default function CDAPreview({ request, onClose, onApproved, onRejected, s
                   </p>
                 </div>
                 <div className="flex flex-wrap items-center gap-2.5">
-                  {profile?.signatureImage && (
+                  {(brokerSignature || profile?.signatureImage) && (
                     <div className="p-1 px-2 border border-slate-200 rounded-lg bg-white flex items-center gap-1.5 shadow-sm">
                       <img 
-                        src={profile.signatureImage} 
+                        src={brokerSignature || profile?.signatureImage || ''} 
                         alt="Current Signature Preview" 
                         referrerPolicy="no-referrer"
                         className="h-6 max-w-[84px] object-contain"
@@ -503,47 +494,49 @@ export default function CDAPreview({ request, onClose, onApproved, onRejected, s
           )}
 
           {activeTab === 'cda' ? (
-            <div ref={printRef} data-cda-content className="bg-white p-6 pb-6 w-[210mm] min-w-[210mm] h-[297mm] mx-auto border border-slate-200 text-slate-900 relative overflow-hidden flex flex-col justify-between" style={{ height: '297mm', minHeight: '297mm', maxHeight: '297mm', boxSizing: 'border-box' }}>
+            <div ref={printRef} data-cda-content className="bg-white p-6 pb-6 w-[210mm] min-w-[210mm] h-[297mm] mx-auto border border-slate-200 text-slate-900 relative overflow-hidden flex flex-col justify-start" style={{ height: '297mm', minHeight: '297mm', maxHeight: '297mm', boxSizing: 'border-box' }}>
               {/* Watermark Logo */}
-              <div className="absolute inset-0 flex items-center justify-center pointer-events-none opacity-[0.03] rotate-[-15deg]">
+              <div className="absolute inset-0 flex items-center justify-center pointer-events-none opacity-[0.03] rotate-[-15deg] z-0">
                 <img 
                   src="/moving_texas_realty_logo_light.png" 
                   alt="" 
                   className="w-full max-w-2xl grayscale cda-logo-watermark"
                   onError={(e) => (e.currentTarget.style.opacity = '0')}
-                  onLoad={(e) => (e.currentTarget.style.opacity = '1')}
-                  style={{ opacity: 0, transition: 'opacity 0.3s' }}
+                  onLoad={(e) => (e.currentTarget.style.opacity = '0.03')}
+                  style={{ opacity: 0.03, width: '500px', maxWidth: '500px', height: 'auto', transition: 'opacity 0.3s' }}
                 />
               </div>
 
-              <div className="relative z-10 flex justify-between items-start border-b-2 border-blue-900 pb-2 mb-2">
-                <div className="flex gap-3 items-center">
+              <div className="relative z-10 flex justify-between items-start border-b-2 border-blue-900 pb-4 mb-4 shrink-0 w-full">
+                <div className="flex gap-3 items-start">
                   <img 
                     src="/moving_texas_realty_logo_dark.png" 
                     alt="" 
-                    className="h-14 w-auto object-contain cda-logo-main"
+                    className="h-[52px] max-h-[52px] w-auto object-contain cda-logo-main shrink-0 mt-0.5"
                     onError={(e) => (e.currentTarget.style.opacity = '0')}
                     onLoad={(e) => (e.currentTarget.style.opacity = '1')}
-                    style={{ opacity: 0, transition: 'opacity 0.3s' }}
+                    style={{ opacity: 1, height: '52px', maxHeight: '52px', width: 'auto', objectFit: 'contain' }}
                   />
-                  <div className="border-l border-slate-200 pl-3 h-12 flex flex-col justify-center">
-                    <h1 className="text-lg font-black text-blue-900 leading-tight whitespace-nowrap">MOVING TEXAS REALTY</h1>
-                    <div className="text-[9px] font-bold text-slate-500 space-y-0.5 uppercase tracking-tighter">
+                  <div className="border-l border-slate-200 pl-3 flex flex-col justify-start">
+                    <h1 className="text-lg font-black text-blue-900 leading-none whitespace-nowrap tracking-tight">MOVING TEXAS REALTY</h1>
+                    <div className="text-[9px] font-bold text-slate-500 space-y-0.5 uppercase tracking-tighter mt-1">
                       <div className="flex items-center gap-1">
-                        <MapPin size={8} className="text-blue-900" />
-                        525 Fort Worth Dr Ste 216, Denton, TX 76201
+                        <MapPin size={8} className="text-blue-900 shrink-0" />
+                        <span>525 Fort Worth Dr Ste 216, Denton, TX 76201</span>
                       </div>
                       <div className="flex items-center gap-1">
-                        <Phone size={8} className="text-blue-900" />
-                        (888) 433-9722 • Office
+                        <Phone size={8} className="text-blue-900 shrink-0" />
+                        <span>(888) 433-9722 • Office</span>
                       </div>
                     </div>
-                    <p className="mt-0.5 text-[8px] font-black text-blue-900 opacity-40 uppercase tracking-[0.2em] border-t border-slate-100 pt-0.5">
-                      Compensation Disbursement Authorization
-                    </p>
+                    <div className="mt-1.5 border-t border-slate-200 pt-1">
+                      <p className="text-[8.5px] font-black text-blue-900/80 uppercase tracking-[0.16em] leading-none">
+                        Compensation Disbursement Authorization
+                      </p>
+                    </div>
                   </div>
                 </div>
-                <div className="text-right flex flex-col items-end">
+                <div className="text-right flex flex-col items-end shrink-0">
                   <div className="bg-blue-900 text-white px-2.5 py-1.5 rounded-lg text-center w-[120px]">
                     <p className="text-[8px] font-bold uppercase tracking-tighter opacity-70 leading-none mb-0.5">Authorization ID</p>
                     <p className="text-sm font-black tracking-widest leading-none">{(request.id || 'PENDING').slice(-6).toUpperCase()}</p>
@@ -562,7 +555,7 @@ export default function CDAPreview({ request, onClose, onApproved, onRejected, s
                     <h4 className="text-[11px] font-black text-blue-900 uppercase tracking-widest mb-1 border-b border-blue-100 pb-0.5">Disbursement Method</h4>
                     <div className="space-y-0.5 text-[11px] font-semibold text-slate-600">
                       <p className="font-bold text-slate-800 text-[11px]">Broker Managed (Direct Payment)</p>
-                      <p className="text-[10px] leading-tight">No Title Company is involved. Moving Texas Realty (Broker) directly processes all rental receipts, lease disbursements, and agent commission payouts internally.</p>
+                      <p className="text-[10px] leading-tight">No Title Company is involved. Moving Texas Realty (Broker) directly processes all rental receipts, lease disbursements, and agent compensation payouts internally.</p>
                     </div>
                   </section>
                 ) : (
@@ -588,22 +581,22 @@ export default function CDAPreview({ request, onClose, onApproved, onRejected, s
                     <div className="grid grid-cols-2 gap-2 text-[10px] mb-0.5 w-full">
                       <div className="min-w-0">
                         <span className="text-slate-400 font-bold uppercase text-[8px] block">Seller</span>
-                        <p className="font-bold text-slate-700 truncate">{request.sellerName || 'N/A'}</p>
+                        <p className="font-bold text-slate-700 break-words leading-tight">{request.sellerName || 'N/A'}</p>
                       </div>
                       <div className="min-w-0">
                         <span className="text-slate-400 font-bold uppercase text-[8px] block">Buyer</span>
-                        <p className="font-bold text-slate-700 truncate">{request.buyerName || 'N/A'}</p>
+                        <p className="font-bold text-slate-700 break-words leading-tight">{request.buyerName || 'N/A'}</p>
                       </div>
                     </div>
-                    <div className="flex gap-3 text-[10px]">
+                    <div className="flex flex-wrap gap-x-4 gap-y-0.5 text-[10px] pt-0.5 border-t border-slate-100">
                       <p>Price: <span className="font-bold">${request.salePrice.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span></p>
                       {request.closingDate && <p>Closing: <span className="font-bold">{formatClosingDate(request.closingDate)}</span></p>}
+                      {request.rateType && (
+                        <p>Compensation: <span className="font-bold">
+                          {request.rateType === 'percentage' ? `${request.commissionRate}%` : `$${request.commissionRate.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
+                        </span></p>
+                      )}
                     </div>
-                    {request.rateType && (
-                      <p className="text-[10px]">Commission: <span className="font-bold">
-                        {request.rateType === 'percentage' ? `${request.commissionRate}%` : `$${request.commissionRate.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
-                      </span></p>
-                    )}
                   </div>
                 </section>
               </div>
@@ -617,7 +610,7 @@ export default function CDAPreview({ request, onClose, onApproved, onRejected, s
                   </div>
                   
                   <div className="flex justify-between font-medium">
-                    <span>Base Commission ({request.rateType === 'percentage' ? `${request.commissionRate}%` : `$${request.commissionRate.toLocaleString()}`})</span>
+                    <span>Base Compensation ({request.rateType === 'percentage' ? `${request.commissionRate}%` : `$${request.commissionRate.toLocaleString()}`})</span>
                     <span>${(request.baseCommission || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
                   </div>
 
@@ -651,7 +644,7 @@ export default function CDAPreview({ request, onClose, onApproved, onRejected, s
                   )}
                   
                   <div className="flex justify-between border-y border-blue-900/20 py-1 my-0.5 font-black text-xs text-blue-900">
-                    <span>GROSS COMMISSION TOTAL</span>
+                    <span>GROSS COMPENSATION TOTAL</span>
                     <span>${request.grossCommission.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
                   </div>
 
@@ -662,7 +655,7 @@ export default function CDAPreview({ request, onClose, onApproved, onRejected, s
                           <span className="font-bold text-slate-900 underline decoration-blue-200 underline-offset-2 text-[11px]">PAYABLE TO: MOVING TEXAS REALTY (BROKER)</span>
                           <span className="text-[9px] text-slate-500 font-medium mt-0.5">
                             {payEntireToBroker 
-                              ? 'Single Disbursement - Full Gross Commission' 
+                              ? 'Single Disbursement - Full Gross Compensation' 
                               : request.mentorSplitAmount > 0
                                 ? `Broker Portion ($${request.brokerSplitAmount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}) + Mentorship Fee ($${request.mentorSplitAmount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })})`
                                 : 'Full Brokerage Portion'}
@@ -717,7 +710,7 @@ export default function CDAPreview({ request, onClose, onApproved, onRejected, s
                               <span className="text-slate-700 font-bold">For Referral Agent: {request.referralAgentName}</span>
                             )}
                             <span>
-                              Referral Fee: {request.referralRateType === 'percentage' ? `${request.referralRateValue}% of commission` : `$${request.referralRateValue.toLocaleString()}`}
+                              Referral Fee: {request.referralRateType === 'percentage' ? `${request.referralRateValue}% of compensation` : `$${request.referralRateValue.toLocaleString()}`}
                             </span>
                             <span className="text-rose-900 font-bold bg-rose-50 border border-rose-100 px-1.5 py-0.5 rounded inline-block text-[8.5px]">
                               ✉️ MAIL REFERRAL CHECK TO: {request.referralBrokerAddress || 'Not Specified (Please contact broker)'}
@@ -731,32 +724,33 @@ export default function CDAPreview({ request, onClose, onApproved, onRejected, s
 
                   {request.isOwnerAgent && !request.payAgent && (
                     <div className="mt-1 p-1.5 bg-blue-50/50 rounded-lg border border-blue-100 flex items-center gap-2">
-                      <span className="text-[10px] italic text-blue-800 font-medium">Note: Agent is property owner; commission portion waived to self. Only broker split is payable.</span>
+                      <span className="text-[10px] italic text-blue-800 font-medium">Note: Agent is property owner; compensation portion waived to self. Only broker split is payable.</span>
                     </div>
                   )}
                 </div>
               </section>
 
-              <div className="relative z-10 mt-auto pt-1">
+              <div className="relative z-10 mt-auto pt-8 my-2 border-t border-slate-200/60 shrink-0">
                 <div className="flex gap-12">
                   <div className="flex-1 text-center font-sans">
                     {/* Signature visually ABOVE the line */}
-                    <div className="h-10 flex flex-col items-center justify-center pb-0.5">
+                    <div className="h-14 min-h-[56px] flex flex-col items-center justify-center pb-1">
                       {request.status === 'approved' ? (
                         <div className="flex flex-col items-center">
-                          {profile?.signatureImage ? (
+                          {brokerSignature ? (
                             <img 
-                              src={profile.signatureImage} 
+                              src={brokerSignature} 
                               alt="Broker Signature" 
                               referrerPolicy="no-referrer"
                               className="max-h-9 max-w-[140px] object-contain select-none"
+                              style={{ maxHeight: '36px', maxWidth: '140px', width: 'auto', height: '36px', objectFit: 'contain' }}
                             />
                           ) : (
                             <div className="font-signature text-2xl text-blue-700 select-none transform -rotate-1 leading-none animate-fade-in" style={{ fontFamily: "'Alex Brush', cursive" }}>
                               Alex Hutchens
                             </div>
                           )}
-                          <div className="text-[6.5px] text-emerald-600 font-extrabold tracking-widest uppercase mt-0.5">
+                          <div className="text-[7px] text-emerald-600 font-extrabold tracking-widest uppercase mt-0.5">
                             ✓ Digitally Signed & Authorized
                           </div>
                         </div>
@@ -782,7 +776,7 @@ export default function CDAPreview({ request, onClose, onApproved, onRejected, s
 
                   <div className="flex-1 text-center font-sans">
                     {/* Date visually ABOVE the line */}
-                    <div className="h-10 flex items-center justify-center pb-0.5">
+                    <div className="h-14 min-h-[56px] flex items-center justify-center pb-1">
                       {request.status === 'approved' ? (
                         <span className="text-[11px] font-black text-slate-800 bg-slate-50 px-2.5 py-0.5 rounded border border-slate-200">
                           {request.approvedAt ? new Date(request.approvedAt).toLocaleDateString(undefined, {
@@ -818,20 +812,21 @@ export default function CDAPreview({ request, onClose, onApproved, onRejected, s
               </div>
             </div>
           ) : (
-            /* Wiring Instructions View */
+              /* Wiring Instructions View */
             <div 
               ref={wirePrintRef} 
               data-wire-content 
-              className="bg-white p-10 pb-12 w-[210mm] min-w-[210mm] h-[297mm] mx-auto border border-slate-200 text-slate-900 relative overflow-hidden flex flex-col justify-between font-sans shadow-lg"
+              className="bg-white p-10 pb-12 w-[210mm] min-w-[210mm] h-[297mm] mx-auto border border-slate-200 text-slate-900 relative overflow-hidden flex flex-col justify-start font-sans shadow-lg"
               style={{ height: '297mm', minHeight: '297mm', maxHeight: '297mm', boxSizing: 'border-box' }}
             >
               {/* Header Logo & Address */}
-              <div className="flex flex-col items-center text-center pt-2">
+              <div className="flex flex-col items-center text-center pt-2 shrink-0 w-full">
                 <img 
                   src="/moving_texas_realty_logo_dark.png" 
                   alt="Moving Texas Realty" 
-                  className="h-16 w-auto object-contain mb-2"
+                  className="h-16 w-auto object-contain mb-2 mx-auto"
                   onError={(e) => (e.currentTarget.style.display = 'none')}
+                  style={{ height: '64px', maxHeight: '64px', width: 'auto', objectFit: 'contain', margin: '0 auto 8px auto', display: 'block' }}
                 />
                 <h1 className="text-2xl font-serif text-slate-900 tracking-wide font-normal">Moving Texas Realty</h1>
                 <p className="text-sm italic text-slate-700 font-serif mt-1">525 Fort Worth Dr Ste 216</p>
@@ -840,92 +835,93 @@ export default function CDAPreview({ request, onClose, onApproved, onRejected, s
               </div>
 
               {/* Date and Property Address */}
-              <div className="space-y-4 my-6 text-base px-6">
-                <div className="flex items-baseline gap-2">
-                  <span className="font-serif text-slate-900">Date:</span>
-                  <span className="border-b border-slate-900 min-w-[240px] px-2 font-sans font-normal text-slate-900">
+              <div className="space-y-4 my-5 text-base px-6 shrink-0 w-full">
+                <div className="flex items-baseline w-full">
+                  <span className="font-serif text-slate-900 font-medium w-[220px] shrink-0">Date:</span>
+                  <span className="border-b border-slate-900 px-2 font-sans font-medium text-slate-900 pb-0.5 flex-1">
                     {new Date().toLocaleDateString('en-US', { year: 'numeric', month: '2-digit', day: '2-digit' })}
                   </span>
                 </div>
 
-                <div className="flex items-baseline gap-2">
-                  <span className="font-serif text-slate-900 shrink-0">Property Address or GF No:</span>
-                  <span className="border-b border-slate-900 flex-1 px-2 font-sans font-normal text-slate-900">
+                <div className="flex items-baseline w-full">
+                  <span className="font-serif text-slate-900 shrink-0 font-medium w-[220px]">Property Address or GF No:</span>
+                  <span className="border-b border-slate-900 px-2 font-sans font-medium text-slate-900 pb-0.5 flex-1">
                     {request.propertyAddress || ''}
                   </span>
                 </div>
               </div>
 
               {/* Main Heading */}
-              <div className="text-center my-4">
+              <div className="text-center my-3 shrink-0 w-full">
                 <h2 className="text-4xl font-sans text-slate-900 font-normal tracking-tight">Wiring Instructions</h2>
               </div>
 
               {/* Beneficiary Details Table */}
-              <div className="my-6 space-y-4 text-base px-6 max-w-2xl mx-auto w-full">
-                <div className="grid grid-cols-12 gap-4 items-baseline">
-                  <span className="col-span-5 font-serif text-slate-900">Beneficiary Name:</span>
-                  <span className="col-span-7 font-sans text-slate-900 font-normal">Moving Texas Realty</span>
+              <div className="my-5 space-y-4 text-base px-6 max-w-2xl mx-auto w-full shrink-0">
+                <div className="flex items-baseline w-full">
+                  <span className="font-serif text-slate-900 font-medium w-[240px] shrink-0">Beneficiary Name:</span>
+                  <span className="font-sans text-slate-900 font-normal flex-1">Moving Texas Realty</span>
                 </div>
 
-                <div className="grid grid-cols-12 gap-4 items-start">
-                  <span className="col-span-5 font-serif text-slate-900">Beneficiary Address:</span>
-                  <div className="col-span-7 font-sans text-slate-900 font-normal leading-snug">
+                <div className="flex items-start w-full">
+                  <span className="font-serif text-slate-900 font-medium w-[240px] shrink-0">Beneficiary Address:</span>
+                  <div className="font-sans text-slate-900 font-normal leading-snug flex-1">
                     <p>525 Fort Worth Dr Ste 216</p>
                     <p>Denton, TX 76201</p>
                   </div>
                 </div>
 
-                <div className="grid grid-cols-12 gap-4 items-baseline">
-                  <span className="col-span-5 font-serif text-slate-900">Beneficiary Bank:</span>
-                  <span className="col-span-7 font-sans text-slate-900 font-normal">Chase Bank NA</span>
+                <div className="flex items-baseline w-full">
+                  <span className="font-serif text-slate-900 font-medium w-[240px] shrink-0">Beneficiary Bank:</span>
+                  <span className="font-sans text-slate-900 font-normal flex-1">Chase Bank NA</span>
                 </div>
 
-                <div className="grid grid-cols-12 gap-4 items-baseline">
-                  <span className="col-span-5 font-serif text-slate-900">Beneficiary Bank ABA:</span>
-                  <span className="col-span-7 font-sans text-slate-900 font-normal">021000021</span>
+                <div className="flex items-baseline w-full">
+                  <span className="font-serif text-slate-900 font-medium w-[240px] shrink-0">Beneficiary Bank ABA:</span>
+                  <span className="font-sans text-slate-900 font-normal flex-1">02100021</span>
                 </div>
 
-                <div className="grid grid-cols-12 gap-4 items-baseline">
-                  <span className="col-span-5 font-serif text-slate-900">Beneficiary Account Number:</span>
-                  <span className="col-span-7 font-sans text-slate-900 font-normal">827955821</span>
+                <div className="flex items-baseline w-full">
+                  <span className="font-serif text-slate-900 font-medium w-[240px] shrink-0">Beneficiary Account Number:</span>
+                  <span className="font-sans text-slate-900 font-normal flex-1">827955821</span>
                 </div>
               </div>
 
               {/* Reference Line */}
-              <div className="mt-6 mb-10 text-base px-6">
-                <div className="flex items-baseline gap-2">
-                  <span className="font-serif shrink-0 text-slate-900">Reference: Address</span>
-                  <span className="border-b border-slate-900 flex-1 px-2 text-center font-sans font-normal text-slate-900">
+              <div className="my-5 text-base px-6 shrink-0 w-full">
+                <div className="flex items-baseline gap-2 w-full">
+                  <span className="font-serif text-slate-900 font-medium shrink-0">Reference: Address</span>
+                  <span className="border-b border-slate-900 px-2 text-center font-sans font-medium text-slate-900 pb-0.5 flex-1 truncate">
                     {(request.propertyAddress || '').split(',')[0].trim()}
                   </span>
-                  <span className="font-serif shrink-0 ml-4 text-slate-900">Agent</span>
-                  <span className="border-b border-slate-900 flex-1 px-2 text-center font-sans font-normal text-slate-900">
+                  <span className="font-serif text-slate-900 text-right font-medium shrink-0 ml-4">Agent</span>
+                  <span className="border-b border-slate-900 px-2 text-center font-sans font-medium text-slate-900 pb-0.5 flex-1 truncate">
                     {request.agentName || ''}
                   </span>
                 </div>
               </div>
 
               {/* Signature Space at the Bottom */}
-              <div className="mt-8 mb-4 px-6 font-sans">
+              <div className="mt-auto pt-6 px-6 font-sans shrink-0">
                 <div className="flex gap-16">
                   <div className="flex-1 text-center">
-                    <div className="h-10 flex flex-col items-center justify-center pb-0.5">
+                    <div className="h-14 min-h-[56px] flex flex-col items-center justify-center pb-1">
                       {request.status === 'approved' ? (
                         <div className="flex flex-col items-center">
-                          {profile?.signatureImage ? (
+                          {brokerSignature ? (
                             <img 
-                              src={profile.signatureImage} 
+                              src={brokerSignature} 
                               alt="Broker Signature" 
                               referrerPolicy="no-referrer"
                               className="max-h-9 max-w-[140px] object-contain select-none"
+                              style={{ maxHeight: '36px', maxWidth: '140px', width: 'auto', height: '36px', objectFit: 'contain' }}
                             />
                           ) : (
                             <div className="font-signature text-2xl text-blue-900 select-none transform -rotate-1 leading-none" style={{ fontFamily: "'Alex Brush', cursive" }}>
                               Alex Hutchens
                             </div>
                           )}
-                          <div className="text-[6.5px] text-emerald-600 font-extrabold tracking-widest uppercase mt-0.5">
+                          <div className="text-[7px] text-emerald-600 font-extrabold tracking-widest uppercase mt-0.5">
                             ✓ Digitally Signed & Verified
                           </div>
                         </div>
@@ -943,7 +939,7 @@ export default function CDAPreview({ request, onClose, onApproved, onRejected, s
                   </div>
 
                   <div className="flex-1 text-center">
-                    <div className="h-10 flex items-center justify-center pb-0.5">
+                    <div className="h-14 min-h-[56px] flex items-center justify-center pb-1">
                       {request.status === 'approved' ? (
                         <span className="text-[11px] font-black text-slate-800 bg-slate-50 px-2.5 py-0.5 rounded border border-slate-200">
                           {request.approvedAt ? new Date(request.approvedAt).toLocaleDateString(undefined, {
@@ -966,8 +962,6 @@ export default function CDAPreview({ request, onClose, onApproved, onRejected, s
                   </div>
                 </div>
               </div>
-
-              <div className="mt-auto"></div>
             </div>
           )}
         </div>
