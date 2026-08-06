@@ -120,33 +120,91 @@ export default function CDAPreview({ request, onClose, onApproved, onRejected, s
     }
   };
 
+  const ensureImagesLoaded = async (element: HTMLElement) => {
+    const images = Array.from(element.querySelectorAll('img'));
+    await Promise.all(
+      images.map(img => {
+        if (img.complete && img.naturalWidth > 0) return Promise.resolve();
+        return new Promise(resolve => {
+          img.onload = resolve;
+          img.onerror = resolve;
+          setTimeout(resolve, 2000);
+        });
+      })
+    );
+  };
+
   const prepareClonedDoc = (clonedDoc: Document, selector: string) => {
-    // 1. Convert all oklch / oklab / color-mix expressions in <style> tags to browser-computed rgb/rgba
-    const dummy = clonedDoc.createElement('div');
-    clonedDoc.body.appendChild(dummy);
+    // 1. Convert all oklch / oklab / color-mix expressions in styles to browser-computed rgb/rgba
+    const dummy = document.createElement('div');
+    dummy.style.position = 'fixed';
+    dummy.style.left = '-9999px';
+    dummy.style.top = '-9999px';
+    dummy.style.visibility = 'hidden';
+    document.body.appendChild(dummy);
 
-    clonedDoc.querySelectorAll('style').forEach(styleTag => {
-      if (!styleTag.textContent) return;
-
-      let css = styleTag.textContent.replace(/color-mix\([^;}]*\)/gi, 'rgba(0,0,0,0.05)');
-
-      css = css.replace(/(oklab|oklch)\([^)]+\)/gi, (match) => {
-        try {
-          dummy.style.color = match;
-          const computed = window.getComputedStyle(dummy).color;
-          if (computed && !computed.includes('okl') && !computed.includes('color-mix')) {
-            return computed;
-          }
-        } catch (e) {
-          // fallback
+    const convertColorToRgb = (colorStr: string): string => {
+      try {
+        dummy.style.color = '';
+        dummy.style.color = colorStr;
+        const computed = window.getComputedStyle(dummy).color;
+        if (computed && !computed.includes('okl') && !computed.includes('color-mix') && computed !== '') {
+          return computed;
         }
-        return 'rgb(0,0,0)';
-      });
+      } catch (e) {
+        // fallback
+      }
+      return 'rgb(30, 41, 59)';
+    };
 
-      styleTag.textContent = css;
+    const sanitizeCss = (cssText: string): string => {
+      if (!cssText) return cssText;
+      let cleaned = cssText.replace(/color-mix\([^;}]*\)/gi, 'rgba(0,0,0,0.05)');
+      cleaned = cleaned.replace(/(oklab|oklch)\([^)]+\)/gi, (match) => {
+        return convertColorToRgb(match);
+      });
+      return cleaned;
+    };
+
+    let combinedCss = '';
+    try {
+      Array.from(document.styleSheets).forEach(sheet => {
+        try {
+          const rules = Array.from(sheet.cssRules || []);
+          rules.forEach(rule => {
+            combinedCss += rule.cssText + '\n';
+          });
+        } catch (e) {
+          // ignore CORS stylesheet errors
+        }
+      });
+    } catch (e) {
+      // ignore
+    }
+
+    document.querySelectorAll('style').forEach(styleTag => {
+      if (styleTag.textContent) {
+        combinedCss += styleTag.textContent + '\n';
+      }
     });
 
-    clonedDoc.body.removeChild(dummy);
+    clonedDoc.querySelectorAll('link[rel="stylesheet"]').forEach(el => el.remove());
+    clonedDoc.querySelectorAll('style').forEach(el => el.remove());
+
+    const newStyle = clonedDoc.createElement('style');
+    newStyle.textContent = sanitizeCss(combinedCss);
+    clonedDoc.head.appendChild(newStyle);
+
+    clonedDoc.querySelectorAll('[style]').forEach(el => {
+      const inlineStyle = el.getAttribute('style');
+      if (inlineStyle && (inlineStyle.includes('okl') || inlineStyle.includes('color-mix'))) {
+        el.setAttribute('style', sanitizeCss(inlineStyle));
+      }
+    });
+
+    if (document.body.contains(dummy)) {
+      document.body.removeChild(dummy);
+    }
 
     // 2. Set target container outer dimensions and flex structure for A4 export
     const el = clonedDoc.querySelector(selector);
@@ -198,18 +256,21 @@ export default function CDAPreview({ request, onClose, onApproved, onRejected, s
   };
 
   const handleDownload = async () => {
+    if (activeTab !== 'cda') {
+      setActiveTab('cda');
+      await new Promise(r => setTimeout(r, 150));
+    }
+
     if (!printRef.current) return;
     
-    // Ensure we're at the top of the scroll for capture
     const originalScrollPos = window.scrollY;
     window.scrollTo(0, 0);
 
-    // Add a small delay to ensure any dynamic content/images are settled
-    await new Promise(resolve => setTimeout(resolve, 600));
-
     try {
       const element = printRef.current;
-      
+      await ensureImagesLoaded(element);
+      await new Promise(resolve => setTimeout(resolve, 300));
+
       const canvas = await html2canvas(element, {
         scale: 2,
         useCORS: true,
@@ -250,21 +311,29 @@ export default function CDAPreview({ request, onClose, onApproved, onRejected, s
       const filename = `CDA - ${safeProperty} - ${suffix}.pdf`;
       
       pdf.save(filename);
-      window.scrollTo(0, originalScrollPos);
     } catch (error) {
       console.error('PDF Generation Error:', error);
       alert('There was an error generating the PDF. Please try again.');
+    } finally {
+      window.scrollTo(0, originalScrollPos);
     }
   };
 
   const handleDownloadWiring = async () => {
+    if (activeTab !== 'wiring') {
+      setActiveTab('wiring');
+      await new Promise(r => setTimeout(r, 150));
+    }
+
     if (!wirePrintRef.current) return;
     const originalScrollPos = window.scrollY;
     window.scrollTo(0, 0);
-    await new Promise(resolve => setTimeout(resolve, 600));
 
     try {
       const element = wirePrintRef.current;
+      await ensureImagesLoaded(element);
+      await new Promise(resolve => setTimeout(resolve, 300));
+
       const canvas = await html2canvas(element, {
         scale: 2,
         useCORS: true,
@@ -304,10 +373,11 @@ export default function CDAPreview({ request, onClose, onApproved, onRejected, s
       const filename = `Wiring_Instructions_-_${safeProperty}.pdf`;
 
       pdf.save(filename);
-      window.scrollTo(0, originalScrollPos);
     } catch (error) {
       console.error('Wiring Instructions PDF Generation Error:', error);
       alert('There was an error generating the Wiring Instructions PDF. Please try again.');
+    } finally {
+      window.scrollTo(0, originalScrollPos);
     }
   };
 
@@ -493,7 +563,7 @@ export default function CDAPreview({ request, onClose, onApproved, onRejected, s
             </div>
           )}
 
-          {activeTab === 'cda' ? (
+          <div className={activeTab === 'cda' ? 'block' : 'hidden'}>
             <div ref={printRef} data-cda-content className="bg-white p-6 pb-6 w-[210mm] min-w-[210mm] h-[297mm] mx-auto border border-slate-200 text-slate-900 relative overflow-hidden flex flex-col justify-start" style={{ height: '297mm', minHeight: '297mm', maxHeight: '297mm', boxSizing: 'border-box' }}>
               {/* Watermark Logo */}
               <div className="absolute inset-0 flex items-center justify-center pointer-events-none opacity-[0.03] rotate-[-15deg] z-0">
@@ -811,8 +881,10 @@ export default function CDAPreview({ request, onClose, onApproved, onRejected, s
                 </div>
               </div>
             </div>
-          ) : (
-              /* Wiring Instructions View */
+          </div>
+
+          <div className={activeTab === 'wiring' ? 'block' : 'hidden'}>
+            {/* Wiring Instructions View */}
             <div 
               ref={wirePrintRef} 
               data-wire-content 
@@ -963,7 +1035,7 @@ export default function CDAPreview({ request, onClose, onApproved, onRejected, s
                 </div>
               </div>
             </div>
-          )}
+          </div>
         </div>
 
         <div className="p-6 bg-white border-t border-slate-100 flex flex-col sm:flex-row items-center justify-between gap-4 font-sans">
