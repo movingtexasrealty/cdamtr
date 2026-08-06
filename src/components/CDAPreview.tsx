@@ -134,81 +134,43 @@ export default function CDAPreview({ request, onClose, onApproved, onRejected, s
     );
   };
 
-  const prepareClonedDoc = (clonedDoc: Document, selector: string) => {
-    // 1. Convert all oklch / oklab / color-mix expressions in styles to browser-computed rgb/rgba
-    const dummy = document.createElement('div');
-    dummy.style.position = 'fixed';
-    dummy.style.left = '-9999px';
-    dummy.style.top = '-9999px';
-    dummy.style.visibility = 'hidden';
-    document.body.appendChild(dummy);
-
-    const convertColorToRgb = (colorStr: string): string => {
-      try {
-        dummy.style.color = '';
-        dummy.style.color = colorStr;
-        const computed = window.getComputedStyle(dummy).color;
-        if (computed && !computed.includes('okl') && !computed.includes('color-mix') && computed !== '') {
-          return computed;
-        }
-      } catch (e) {
-        // fallback
-      }
-      return 'rgb(30, 41, 59)';
-    };
-
-    const sanitizeCss = (cssText: string): string => {
-      if (!cssText) return cssText;
-      let cleaned = cssText.replace(/color-mix\([^;}]*\)/gi, 'rgba(0,0,0,0.05)');
-      cleaned = cleaned.replace(/(oklab|oklch)\([^)]+\)/gi, (match) => {
-        return convertColorToRgb(match);
-      });
-      return cleaned;
-    };
-
-    let combinedCss = '';
+  const cloneComputedStyles = (sourceEl: HTMLElement, targetEl: HTMLElement) => {
     try {
-      Array.from(document.styleSheets).forEach(sheet => {
-        try {
-          const rules = Array.from(sheet.cssRules || []);
-          rules.forEach(rule => {
-            combinedCss += rule.cssText + '\n';
-          });
-        } catch (e) {
-          // ignore CORS stylesheet errors
-        }
-      });
+      const sourceNodes = [sourceEl, ...Array.from(sourceEl.querySelectorAll<HTMLElement>('*'))];
+      const targetNodes = [targetEl, ...Array.from(targetEl.querySelectorAll<HTMLElement>('*'))];
+
+      for (let i = 0; i < sourceNodes.length; i++) {
+        const s = sourceNodes[i];
+        const t = targetNodes[i];
+        if (!s || !t) continue;
+
+        const c = window.getComputedStyle(s);
+        if (c.color && !c.color.includes('okl')) t.style.color = c.color;
+        if (c.backgroundColor && !c.backgroundColor.includes('okl')) t.style.backgroundColor = c.backgroundColor;
+        if (c.borderColor && !c.borderColor.includes('okl')) t.style.borderColor = c.borderColor;
+      }
     } catch (e) {
-      // ignore
+      // Ignore non-fatal computed style errors
     }
+  };
 
-    document.querySelectorAll('style').forEach(styleTag => {
+  const prepareClonedDoc = (clonedDoc: Document, selector: string, sourceElement: HTMLElement) => {
+    // 1. Sanitize oklch/color-mix expressions inside style tags WITHOUT deleting style tags
+    clonedDoc.querySelectorAll('style').forEach(styleTag => {
       if (styleTag.textContent) {
-        combinedCss += styleTag.textContent + '\n';
+        styleTag.textContent = styleTag.textContent
+          .replace(/color-mix\([^;}]*\)/gi, 'rgba(0,0,0,0.05)')
+          .replace(/oklch\([^)]+\)/gi, 'rgb(30, 41, 59)')
+          .replace(/oklab\([^)]+\)/gi, 'rgb(30, 41, 59)');
       }
     });
 
-    clonedDoc.querySelectorAll('link[rel="stylesheet"]').forEach(el => el.remove());
-    clonedDoc.querySelectorAll('style').forEach(el => el.remove());
-
-    const newStyle = clonedDoc.createElement('style');
-    newStyle.textContent = sanitizeCss(combinedCss);
-    clonedDoc.head.appendChild(newStyle);
-
-    clonedDoc.querySelectorAll('[style]').forEach(el => {
-      const inlineStyle = el.getAttribute('style');
-      if (inlineStyle && (inlineStyle.includes('okl') || inlineStyle.includes('color-mix'))) {
-        el.setAttribute('style', sanitizeCss(inlineStyle));
-      }
-    });
-
-    if (document.body.contains(dummy)) {
-      document.body.removeChild(dummy);
-    }
-
-    // 2. Set target container outer dimensions and flex structure for A4 export
+    // 2. Clone browser-computed RGB colors onto cloned DOM elements
     const el = clonedDoc.querySelector(selector);
     if (el instanceof HTMLElement) {
+      cloneComputedStyles(sourceElement, el);
+
+      // Explicitly lock A4 container outer dimensions & flex layout
       el.style.position = 'relative'; 
       el.style.width = '794px'; 
       el.style.minWidth = '794px';
@@ -220,11 +182,8 @@ export default function CDAPreview({ request, onClose, onApproved, onRejected, s
       el.style.boxShadow = 'none';
       el.style.transform = 'none';
       el.style.boxSizing = 'border-box';
-      el.style.display = 'flex';
-      el.style.flexDirection = 'column';
-      el.style.justifyContent = 'flex-start';
 
-      // Ensure explicit dimensions on images inside the cloned DOM
+      // Explicit logo image sizing
       const watermark = el.querySelector('.cda-logo-watermark') as HTMLElement;
       if (watermark) {
         watermark.style.opacity = '0.03';
@@ -258,7 +217,7 @@ export default function CDAPreview({ request, onClose, onApproved, onRejected, s
   const handleDownload = async () => {
     if (activeTab !== 'cda') {
       setActiveTab('cda');
-      await new Promise(r => setTimeout(r, 150));
+      await new Promise(r => setTimeout(r, 200));
     }
 
     if (!printRef.current) return;
@@ -279,7 +238,7 @@ export default function CDAPreview({ request, onClose, onApproved, onRejected, s
         backgroundColor: '#ffffff',
         imageTimeout: 15000,
         onclone: (clonedDoc) => {
-          prepareClonedDoc(clonedDoc, '[data-cda-content]');
+          prepareClonedDoc(clonedDoc, '[data-cda-content]', element);
         }
       });
       
@@ -292,19 +251,9 @@ export default function CDAPreview({ request, onClose, onApproved, onRejected, s
       });
       
       const pdfWidth = pdf.internal.pageSize.getWidth();
-      const pageHeight = pdf.internal.pageSize.getHeight();
-      let renderWidth = pdfWidth;
-      let renderHeight = (canvas.height * pdfWidth) / canvas.width;
-
-      if (renderHeight > pageHeight) {
-        const scale = pageHeight / renderHeight;
-        renderWidth = pdfWidth * scale;
-        renderHeight = pageHeight;
-        const xOffset = (pdfWidth - renderWidth) / 2;
-        pdf.addImage(imgData, 'PNG', xOffset, 0, renderWidth, renderHeight, undefined, 'FAST');
-      } else {
-        pdf.addImage(imgData, 'PNG', 0, 0, renderWidth, renderHeight, undefined, 'FAST');
-      }
+      const pdfHeight = pdf.internal.pageSize.getHeight();
+      
+      pdf.addImage(imgData, 'PNG', 0, 0, pdfWidth, pdfHeight, undefined, 'FAST');
       
       const safeProperty = (request.propertyAddress || 'Transaction').split(',')[0].trim().replace(/[^a-z0-9]/gi, '_');
       const suffix = payEntireToBroker ? 'Broker_Only' : (request.agentName || 'Agent').trim().replace(/[^a-z0-9]/gi, '_');
@@ -322,7 +271,7 @@ export default function CDAPreview({ request, onClose, onApproved, onRejected, s
   const handleDownloadWiring = async () => {
     if (activeTab !== 'wiring') {
       setActiveTab('wiring');
-      await new Promise(r => setTimeout(r, 150));
+      await new Promise(r => setTimeout(r, 200));
     }
 
     if (!wirePrintRef.current) return;
@@ -342,7 +291,7 @@ export default function CDAPreview({ request, onClose, onApproved, onRejected, s
         backgroundColor: '#ffffff',
         imageTimeout: 15000,
         onclone: (clonedDoc) => {
-          prepareClonedDoc(clonedDoc, '[data-wire-content]');
+          prepareClonedDoc(clonedDoc, '[data-wire-content]', element);
         }
       });
 
@@ -355,19 +304,9 @@ export default function CDAPreview({ request, onClose, onApproved, onRejected, s
       });
 
       const pdfWidth = pdf.internal.pageSize.getWidth();
-      const pageHeight = pdf.internal.pageSize.getHeight();
-      let renderWidth = pdfWidth;
-      let renderHeight = (canvas.height * pdfWidth) / canvas.width;
+      const pdfHeight = pdf.internal.pageSize.getHeight();
 
-      if (renderHeight > pageHeight) {
-        const scale = pageHeight / renderHeight;
-        renderWidth = pdfWidth * scale;
-        renderHeight = pageHeight;
-        const xOffset = (pdfWidth - renderWidth) / 2;
-        pdf.addImage(imgData, 'PNG', xOffset, 0, renderWidth, renderHeight, undefined, 'FAST');
-      } else {
-        pdf.addImage(imgData, 'PNG', 0, 0, renderWidth, renderHeight, undefined, 'FAST');
-      }
+      pdf.addImage(imgData, 'PNG', 0, 0, pdfWidth, pdfHeight, undefined, 'FAST');
 
       const safeProperty = (request.propertyAddress || 'Transaction').split(',')[0].trim().replace(/[^a-z0-9]/gi, '_');
       const filename = `Wiring_Instructions_-_${safeProperty}.pdf`;
