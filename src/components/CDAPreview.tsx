@@ -134,10 +134,145 @@ export default function CDAPreview({ request, onClose, onApproved, onRejected, s
     );
   };
 
+  const convertColorToRgb = (colorStr: string, propName?: string): string => {
+    if (!colorStr || colorStr === 'transparent' || colorStr === 'rgba(0, 0, 0, 0)' || colorStr === 'inherit' || colorStr === 'initial') {
+      return propName === 'color' ? '#1e293b' : 'transparent';
+    }
+    if (!colorStr.includes('okl') && !colorStr.includes('color-mix')) return colorStr;
+
+    // 1. Canvas Context parsing
+    try {
+      const canvasCtx = document.createElement('canvas').getContext('2d');
+      if (canvasCtx) {
+        canvasCtx.fillStyle = '#000000';
+        canvasCtx.fillStyle = colorStr;
+        const res = canvasCtx.fillStyle;
+        if (res && !res.includes('okl') && !res.includes('color-mix') && res !== '#000000') {
+          return res;
+        }
+      }
+    } catch (e) {
+      // ignore
+    }
+
+    // 2. DOM computed style parsing
+    try {
+      const dummy = document.createElement('div');
+      dummy.style.position = 'fixed';
+      dummy.style.left = '-9999px';
+      dummy.style.top = '-9999px';
+      dummy.style.visibility = 'hidden';
+      dummy.style.color = colorStr;
+      document.body.appendChild(dummy);
+      const computed = window.getComputedStyle(dummy).color;
+      document.body.removeChild(dummy);
+
+      if (computed && !computed.includes('okl') && !computed.includes('color-mix') && computed !== '') {
+        return computed;
+      }
+    } catch (e) {
+      // ignore
+    }
+
+    // Fallbacks per property
+    if (propName === 'backgroundColor') return '#f8fafc';
+    if (propName === 'color') return '#1e293b';
+    if (propName && propName.includes('Color')) return '#cbd5e1';
+    return 'transparent';
+  };
+
+  const sanitizeCssString = (cssText: string): string => {
+    if (!cssText) return cssText;
+    let cleaned = cssText.replace(/color-mix\([^;}]*\)/gi, (match) => {
+      const rgb = convertColorToRgb(match);
+      return rgb !== 'transparent' ? rgb : '#f8fafc';
+    });
+    cleaned = cleaned.replace(/(oklab|oklch)\([^)]+\)/gi, (match) => {
+      const rgb = convertColorToRgb(match);
+      return rgb !== 'transparent' ? rgb : '#1e293b';
+    });
+    return cleaned;
+  };
+
   const cloneComputedStyles = (sourceEl: HTMLElement, targetEl: HTMLElement) => {
     try {
       const sourceNodes = [sourceEl, ...Array.from(sourceEl.querySelectorAll<HTMLElement>('*'))];
       const targetNodes = [targetEl, ...Array.from(targetEl.querySelectorAll<HTMLElement>('*'))];
+
+      const styleProps: (keyof CSSStyleDeclaration)[] = [
+        'display',
+        'flexDirection',
+        'flexWrap',
+        'alignItems',
+        'alignContent',
+        'justifyContent',
+        'justifyItems',
+        'gridTemplateColumns',
+        'gridTemplateRows',
+        'gridColumn',
+        'gridRow',
+        'gap',
+        'rowGap',
+        'columnGap',
+        'position',
+        'top',
+        'right',
+        'bottom',
+        'left',
+        'boxSizing',
+        'width',
+        'height',
+        'minWidth',
+        'minHeight',
+        'maxWidth',
+        'maxHeight',
+        'paddingTop',
+        'paddingRight',
+        'paddingBottom',
+        'paddingLeft',
+        'marginTop',
+        'marginRight',
+        'marginBottom',
+        'marginLeft',
+        'borderTopWidth',
+        'borderRightWidth',
+        'borderBottomWidth',
+        'borderLeftWidth',
+        'borderTopStyle',
+        'borderRightStyle',
+        'borderBottomStyle',
+        'borderLeftStyle',
+        'borderRadius',
+        'borderTopLeftRadius',
+        'borderTopRightRadius',
+        'borderBottomLeftRadius',
+        'borderBottomRightRadius',
+        'fontSize',
+        'fontWeight',
+        'fontFamily',
+        'fontStyle',
+        'lineHeight',
+        'textAlign',
+        'textTransform',
+        'letterSpacing',
+        'whiteSpace' as any,
+        'wordBreak',
+        'opacity',
+        'overflow',
+        'zIndex',
+        'transform',
+        'transformOrigin',
+        'boxShadow'
+      ];
+
+      const colorProps: (keyof CSSStyleDeclaration)[] = [
+        'color',
+        'backgroundColor',
+        'borderTopColor',
+        'borderRightColor',
+        'borderBottomColor',
+        'borderLeftColor'
+      ];
 
       for (let i = 0; i < sourceNodes.length; i++) {
         const s = sourceNodes[i];
@@ -145,30 +280,61 @@ export default function CDAPreview({ request, onClose, onApproved, onRejected, s
         if (!s || !t) continue;
 
         const c = window.getComputedStyle(s);
-        if (c.color && !c.color.includes('okl')) t.style.color = c.color;
-        if (c.backgroundColor && !c.backgroundColor.includes('okl')) t.style.backgroundColor = c.backgroundColor;
-        if (c.borderColor && !c.borderColor.includes('okl')) t.style.borderColor = c.borderColor;
+
+        for (const prop of styleProps) {
+          const val = c[prop];
+          if (val && typeof val === 'string' && val !== '' && val !== 'initial') {
+            if (prop === 'height') {
+              const isMedia = s.tagName === 'IMG' || s.tagName === 'SVG' || s.tagName === 'CANVAS' || s.tagName === 'INPUT';
+              const isRoot = s === sourceEl;
+              const hasExplicitHeight = Boolean(s.style && s.style.height && s.style.height !== 'auto');
+              if (!isMedia && !isRoot && !hasExplicitHeight) {
+                continue;
+              }
+            }
+            (t.style as any)[prop] = sanitizeCssString(val);
+          }
+        }
+
+        for (const prop of colorProps) {
+          const val = c[prop];
+          if (val && typeof val === 'string' && val !== '') {
+            (t.style as any)[prop] = convertColorToRgb(val, prop as string);
+          }
+        }
       }
     } catch (e) {
-      // Ignore non-fatal computed style errors
+      console.error('Error cloning computed styles for PDF:', e);
     }
   };
 
   const prepareClonedDoc = (clonedDoc: Document, selector: string, sourceElement: HTMLElement) => {
-    // 1. Sanitize oklch/color-mix expressions inside style tags WITHOUT deleting style tags
+    // 1. Sanitize style tags inside cloned document
     clonedDoc.querySelectorAll('style').forEach(styleTag => {
       if (styleTag.textContent) {
-        styleTag.textContent = styleTag.textContent
-          .replace(/color-mix\([^;}]*\)/gi, 'rgba(0,0,0,0.05)')
-          .replace(/oklch\([^)]+\)/gi, 'rgb(30, 41, 59)')
-          .replace(/oklab\([^)]+\)/gi, 'rgb(30, 41, 59)');
+        styleTag.textContent = sanitizeCssString(styleTag.textContent);
       }
     });
 
-    // 2. Clone browser-computed RGB colors onto cloned DOM elements
+    // 2. Remove external stylesheets that html2canvas might try to parse if they contain oklab
+    clonedDoc.querySelectorAll('link[rel="stylesheet"]').forEach(link => {
+      link.remove();
+    });
+
+    // 3. Clone browser-computed RGB colors and layout styles onto cloned DOM elements
     const el = clonedDoc.querySelector(selector);
     if (el instanceof HTMLElement) {
       cloneComputedStyles(sourceElement, el);
+
+      // Sanitize all inline styles in cloned sub-tree
+      el.querySelectorAll('*').forEach(node => {
+        if (node instanceof HTMLElement) {
+          const inline = node.getAttribute('style');
+          if (inline && (inline.includes('okl') || inline.includes('color-mix'))) {
+            node.setAttribute('style', sanitizeCssString(inline));
+          }
+        }
+      });
 
       // Explicitly lock A4 container outer dimensions & flex layout
       el.style.position = 'relative'; 
@@ -182,6 +348,8 @@ export default function CDAPreview({ request, onClose, onApproved, onRejected, s
       el.style.boxShadow = 'none';
       el.style.transform = 'none';
       el.style.boxSizing = 'border-box';
+      el.style.paddingTop = '14px';
+      el.style.paddingBottom = '16px';
 
       // Explicit logo image sizing
       const watermark = el.querySelector('.cda-logo-watermark') as HTMLElement;
@@ -332,12 +500,14 @@ export default function CDAPreview({ request, onClose, onApproved, onRejected, s
   const handleSendApprovedEmailOnly = () => {
     const propertyAddress = request.propertyAddress || '[Property Address]';
     const emailTo = request.titleCompanyEmail || '';
-    const escrowOfficer = request.escrowOfficerName?.trim() || 'Escrow Officer';
+    const rawOfficerName = request.escrowOfficerName?.trim();
+    const escrowOfficerFirstName = rawOfficerName ? rawOfficerName.split(' ')[0] : 'Escrow Officer';
     const subject = encodeURIComponent(`${propertyAddress} - CDA & Wiring Instructions - Moving Texas Realty`);
     const body = encodeURIComponent(
-      `Dear ${escrowOfficer},\n\n` +
-      `Please see attached Compensation Disbursement Authorization (CDA) and Broker Wiring Instructions for Moving Texas Realty.\n\n` +
-      `Thank you,\nMoving Texas Realty`
+      `Dear ${escrowOfficerFirstName},\n\n` +
+      `Please see attached CDA for Moving Texas Realty regarding ${propertyAddress} along with wire instructions for the broker.\n\n` +
+      `Please let me know if you have any questions.\n\n` +
+      `Thanks,`
     );
     const ccEmails = ['7hrealty+CDA@gmail.com'];
     if (request.agentEmail) {
@@ -503,7 +673,7 @@ export default function CDAPreview({ request, onClose, onApproved, onRejected, s
           )}
 
           <div className={activeTab === 'cda' ? 'block' : 'hidden'}>
-            <div ref={printRef} data-cda-content className="bg-white p-6 pb-6 w-[210mm] min-w-[210mm] h-[297mm] mx-auto border border-slate-200 text-slate-900 relative overflow-hidden flex flex-col justify-start" style={{ height: '297mm', minHeight: '297mm', maxHeight: '297mm', boxSizing: 'border-box' }}>
+            <div ref={printRef} data-cda-content className="bg-white px-6 pt-3.5 pb-4 w-[210mm] min-w-[210mm] h-[297mm] mx-auto border border-slate-200 text-slate-900 relative overflow-hidden flex flex-col justify-start" style={{ height: '297mm', minHeight: '297mm', maxHeight: '297mm', boxSizing: 'border-box' }}>
               {/* Watermark Logo */}
               <div className="absolute inset-0 flex items-center justify-center pointer-events-none opacity-[0.03] rotate-[-15deg] z-0">
                 <img 
@@ -528,27 +698,37 @@ export default function CDAPreview({ request, onClose, onApproved, onRejected, s
                   />
                   <div className="border-l border-slate-200 pl-3 flex flex-col justify-start">
                     <h1 className="text-lg font-black text-blue-900 leading-none whitespace-nowrap tracking-tight">MOVING TEXAS REALTY</h1>
-                    <div className="text-[9px] font-bold text-slate-500 space-y-0.5 uppercase tracking-tighter mt-1">
-                      <div className="flex items-center gap-1">
-                        <MapPin size={8} className="text-blue-900 shrink-0" />
-                        <span>525 Fort Worth Dr Ste 216, Denton, TX 76201</span>
-                      </div>
-                      <div className="flex items-center gap-1">
-                        <Phone size={8} className="text-blue-900 shrink-0" />
-                        <span>(888) 433-9722 • Office</span>
-                      </div>
-                    </div>
+                    <table className="mt-1 border-collapse text-[9px] font-bold text-slate-500 uppercase tracking-tighter">
+                      <tbody>
+                        <tr>
+                          <td className="pr-1 py-[0.5px] align-middle text-blue-900" style={{ verticalAlign: 'middle', paddingRight: '4px', paddingTop: '2.5px' }}>
+                            <MapPin size={9} className="text-blue-900 inline-block align-middle" style={{ display: 'inline-block', verticalAlign: 'middle', transform: 'translateY(1px)' }} />
+                          </td>
+                          <td className="py-[0.5px] align-middle whitespace-nowrap text-slate-500" style={{ verticalAlign: 'middle' }}>
+                            525 Fort Worth Dr Ste 216, Denton, TX 76201
+                          </td>
+                        </tr>
+                        <tr>
+                          <td className="pr-1 py-[0.5px] align-middle text-blue-900" style={{ verticalAlign: 'middle', paddingRight: '4px', paddingTop: '2.5px' }}>
+                            <Phone size={9} className="text-blue-900 inline-block align-middle" style={{ display: 'inline-block', verticalAlign: 'middle', transform: 'translateY(1px)' }} />
+                          </td>
+                          <td className="py-[0.5px] align-middle whitespace-nowrap text-slate-500" style={{ verticalAlign: 'middle' }}>
+                            (888) 433-9722 • Office
+                          </td>
+                        </tr>
+                      </tbody>
+                    </table>
                     <div className="mt-1.5 border-t border-slate-200 pt-1">
-                      <p className="text-[8.5px] font-black text-blue-900/80 uppercase tracking-[0.16em] leading-none">
+                      <p className="text-[8.5px] font-black text-blue-900 uppercase tracking-[0.16em] leading-none">
                         Compensation Disbursement Authorization
                       </p>
                     </div>
                   </div>
                 </div>
                 <div className="text-right flex flex-col items-end shrink-0">
-                  <div className="bg-blue-900 text-white px-2.5 py-1.5 rounded-lg text-center w-[120px]">
-                    <p className="text-[8px] font-bold uppercase tracking-tighter opacity-70 leading-none mb-0.5">Authorization ID</p>
-                    <p className="text-sm font-black tracking-widest leading-none">{(request.id || 'PENDING').slice(-6).toUpperCase()}</p>
+                  <div className="bg-[#1e3a8a] text-white px-3.5 pt-2 pb-[20px] rounded-lg text-center min-w-[125px] flex flex-col items-center justify-center">
+                    <p className="text-[8px] font-bold uppercase tracking-tight text-blue-100 leading-normal mb-0.5">Authorization ID</p>
+                    <p className="text-sm font-black tracking-widest leading-normal">{(request.id || 'PENDING').slice(-6).toUpperCase()}</p>
                   </div>
                   <div className="mt-1">
                     <p className="text-[9px] font-bold text-slate-500">
@@ -561,7 +741,7 @@ export default function CDAPreview({ request, onClose, onApproved, onRejected, s
               <div className="relative z-10 flex gap-6 mb-2">
                 {request.propertyType === 'Lease' ? (
                   <section className="flex-1">
-                    <h4 className="text-[11px] font-black text-blue-900 uppercase tracking-widest mb-1 border-b border-blue-100 pb-0.5">Disbursement Method</h4>
+                    <h4 className="text-[11px] font-black text-blue-900 uppercase tracking-widest mb-2 border-b border-blue-100 pb-2.5">Disbursement Method</h4>
                     <div className="space-y-0.5 text-[11px] font-semibold text-slate-600">
                       <p className="font-bold text-slate-800 text-[11px]">Broker Managed (Direct Payment)</p>
                       <p className="text-[10px] leading-tight">No Title Company is involved. Moving Texas Realty (Broker) directly processes all rental receipts, lease disbursements, and agent compensation payouts internally.</p>
@@ -569,7 +749,7 @@ export default function CDAPreview({ request, onClose, onApproved, onRejected, s
                   </section>
                 ) : (
                   <section className="flex-1">
-                    <h4 className="text-[11px] font-black text-blue-900 uppercase tracking-widest mb-1 border-b border-blue-100 pb-0.5">Title Company Info</h4>
+                    <h4 className="text-[11px] font-black text-blue-900 uppercase tracking-widest mb-2 border-b border-blue-100 pb-2.5">Title Company Info</h4>
                     <div className="space-y-0.5 text-[11px] font-medium">
                       <p className="text-sm font-bold text-slate-900">{request.titleCompanyName}</p>
                       {request.escrowOfficerName && <p>Attn: {request.escrowOfficerName}</p>}
@@ -579,25 +759,25 @@ export default function CDAPreview({ request, onClose, onApproved, onRejected, s
                   </section>
                 )}
                 <section className="flex-1">
-                  <h4 className="text-[11px] font-black text-blue-900 uppercase tracking-widest mb-1 border-b border-blue-100 pb-0.5">Property Details</h4>
-                  <div className="space-y-0.5 text-[11px] font-medium">
-                    <div className="flex items-center gap-1.5 mb-0.5">
-                      <span className="text-[8px] bg-blue-100 text-blue-700 px-1 py-0.5 rounded font-black uppercase tracking-wider">{request.propertyType || 'Home Sale'}</span>
-                      <span className="text-[8px] bg-slate-100 text-slate-700 px-1 py-0.5 rounded font-black uppercase tracking-wider">{request.representation || 'Seller'} Rep</span>
-                      {request.mlsNumber && <span className="text-[10px] text-slate-500 font-bold">MLS# {request.mlsNumber}</span>}
+                  <h4 className="text-[11px] font-black text-blue-900 uppercase tracking-widest mb-2 border-b border-blue-100 pb-2.5">Property Details</h4>
+                  <div className="text-[11px] font-medium">
+                    <div className="flex items-center gap-1.5 mb-1.5">
+                      <span className="text-[8px] bg-blue-100 text-blue-700 px-2 pt-2 pb-2.5 rounded font-black uppercase tracking-wider inline-flex items-center">{request.propertyType || 'Home Sale'}</span>
+                      <span className="text-[8px] bg-slate-100 text-slate-700 px-2 pt-2 pb-2.5 rounded font-black uppercase tracking-wider inline-flex items-center">{request.representation || 'Seller'} Rep</span>
+                      {request.mlsNumber && <span className="text-[10px] text-slate-500 font-bold inline-block pb-1">MLS# {request.mlsNumber}</span>}
                     </div>
-                    <p className="text-sm font-bold text-slate-900">{request.propertyAddress}</p>
-                    <div className="grid grid-cols-2 gap-2 text-[10px] mb-0.5 w-full">
+                    <p className="text-sm font-bold text-slate-900 leading-snug mb-2">{request.propertyAddress}</p>
+                    <div className="grid grid-cols-2 gap-3 text-[10px] pb-2 w-full">
                       <div className="min-w-0">
-                        <span className="text-slate-400 font-bold uppercase text-[8px] block">Seller</span>
-                        <p className="font-bold text-slate-700 break-words leading-tight">{request.sellerName || 'N/A'}</p>
+                        <span className="text-slate-400 font-bold uppercase text-[8px] block mb-0.5">Seller</span>
+                        <p className="font-bold text-slate-700 break-words leading-normal">{request.sellerName || 'N/A'}</p>
                       </div>
                       <div className="min-w-0">
-                        <span className="text-slate-400 font-bold uppercase text-[8px] block">Buyer</span>
-                        <p className="font-bold text-slate-700 break-words leading-tight">{request.buyerName || 'N/A'}</p>
+                        <span className="text-slate-400 font-bold uppercase text-[8px] block mb-0.5">Buyer</span>
+                        <p className="font-bold text-slate-700 break-words leading-normal">{request.buyerName || 'N/A'}</p>
                       </div>
                     </div>
-                    <div className="flex flex-wrap gap-x-4 gap-y-0.5 text-[10px] pt-0.5 border-t border-slate-100">
+                    <div className="flex flex-wrap gap-x-4 gap-y-1 text-[10px] pt-2 border-t border-slate-200 mt-1">
                       <p>Price: <span className="font-bold">${request.salePrice.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span></p>
                       {request.closingDate && <p>Closing: <span className="font-bold">{formatClosingDate(request.closingDate)}</span></p>}
                       {request.rateType && (
@@ -611,20 +791,20 @@ export default function CDAPreview({ request, onClose, onApproved, onRejected, s
               </div>
 
               <section className="relative z-10 mb-2">
-                <h4 className="text-[11px] font-black text-blue-900 uppercase tracking-widest mb-1 border-b border-blue-100 pb-0.5">Disbursement Summary</h4>
-                <div className="bg-slate-50 p-2.5 rounded-lg space-y-1 text-[11px]">
-                  <div className="flex justify-between border-b border-slate-200 pb-0.5">
+                <h4 className="text-[11px] font-black text-blue-900 uppercase tracking-widest mb-2 border-b border-blue-100 pb-2.5">Disbursement Summary</h4>
+                <div className="bg-slate-50 p-2.5 rounded-lg space-y-2.5 text-[11px]">
+                  <div className="flex justify-between border-b border-slate-200 pb-2 mb-2">
                     <span className="text-slate-500 font-bold uppercase text-[8px]">Description</span>
                     <span className="text-slate-500 font-bold uppercase text-[8px]">Amount</span>
                   </div>
                   
-                  <div className="flex justify-between font-medium">
+                  <div className="flex justify-between font-medium py-1">
                     <span>Base Compensation ({request.rateType === 'percentage' ? `${request.commissionRate}%` : `$${request.commissionRate.toLocaleString()}`})</span>
                     <span>${(request.baseCommission || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
                   </div>
 
                   {(request.bonusAmount > 0 || request.referralAmount > 0 || request.rebateAmount > 0 || (request.hasCoBroker && request.coBrokerSplitAmount > 0)) && (
-                    <div className="space-y-0.5 border-t border-slate-200 pt-1 text-[10px]">
+                    <div className="space-y-1.5 border-t border-slate-200 pt-2 my-2 text-[10px]">
                       {request.bonusAmount > 0 && (
                         <div className="flex justify-between text-slate-600">
                           <span>Production Bonus {request.bonusRateType === 'percentage' ? `(${request.bonusRateValue}% of Sale Price)` : '(Flat)'}</span>
@@ -652,13 +832,13 @@ export default function CDAPreview({ request, onClose, onApproved, onRejected, s
                     </div>
                   )}
                   
-                  <div className="flex justify-between border-y border-blue-900/20 py-1 my-0.5 font-black text-xs text-blue-900">
+                  <div className="flex justify-between border-y border-blue-200 py-2.5 my-2.5 font-black text-xs text-blue-900">
                     <span>GROSS COMPENSATION TOTAL</span>
                     <span>${request.grossCommission.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
                   </div>
 
                   <div className="space-y-1 pt-0.5">
-                    <div className="flex flex-col gap-1 bg-blue-50/50 p-2 rounded-lg border border-blue-100">
+                    <div className="flex flex-col gap-1 bg-blue-50 px-2 pt-2 pb-[20px] rounded-lg border border-blue-100">
                       <div className="flex justify-between items-start">
                         <div className="flex flex-col">
                           <span className="font-bold text-slate-900 underline decoration-blue-200 underline-offset-2 text-[11px]">PAYABLE TO: MOVING TEXAS REALTY (BROKER)</span>
@@ -679,15 +859,25 @@ export default function CDAPreview({ request, onClose, onApproved, onRejected, s
                       </div>
                       
                       {!payEntireToBroker && request.mentorSplitAmount > 0 && (
-                        <div className="border-t border-blue-900/10 mt-0.5 pt-0.5 text-[8.5px] text-purple-700 font-bold uppercase tracking-wider flex items-start gap-1">
-                          <span className="inline-block w-1 h-1 bg-purple-500 rounded-full mt-0.5 shrink-0"></span>
-                          <span>Includes Mentorship Fee of ${request.mentorSplitAmount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} to be paid to Assigned Mentor by Moving Texas Realty.</span>
+                        <div className="border-t border-blue-100 mt-1 pt-1 text-[8.5px] text-purple-700 font-bold uppercase tracking-wider">
+                          <table className="border-collapse w-full">
+                            <tbody>
+                              <tr>
+                                <td className="align-middle pr-1" style={{ verticalAlign: 'middle', width: '8px', paddingRight: '4px' }}>
+                                  <span className="block w-1.5 h-1.5 bg-purple-600 rounded-full" style={{ display: 'block', width: '5px', height: '5px' }}></span>
+                                </td>
+                                <td className="align-middle text-purple-700" style={{ verticalAlign: 'middle' }}>
+                                  <span>Includes Mentorship Fee of ${request.mentorSplitAmount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} to be paid to Assigned Mentor by Moving Texas Realty.</span>
+                                </td>
+                              </tr>
+                            </tbody>
+                          </table>
                         </div>
                       )}
                     </div>
 
                     {!payEntireToBroker && request.agentGrossAmount > 0 && (
-                      <div className="flex justify-between items-center bg-white p-1.5 px-2 rounded-lg border border-slate-200">
+                      <div className="flex justify-between items-center bg-white px-2 pt-1.5 pb-[20px] rounded-lg border border-slate-200">
                         <div className="flex flex-col">
                           <span className="font-bold text-slate-900 underline decoration-emerald-200 underline-offset-2 text-[11px]">PAYABLE TO: {request.agentName} (AGENT)</span>
                           <span className="text-[9px] text-slate-500 font-medium flex items-center gap-1">
@@ -699,7 +889,7 @@ export default function CDAPreview({ request, onClose, onApproved, onRejected, s
                     )}
 
                     {request.hasCoBroker && request.coBrokerSplitAmount > 0 && (
-                      <div className="flex justify-between items-center bg-white p-1.5 px-2 rounded-lg border border-slate-200">
+                      <div className="flex justify-between items-center bg-white px-2 pt-1.5 pb-[20px] rounded-lg border border-slate-200">
                         <div className="flex flex-col">
                           <span className="font-bold text-slate-900 underline decoration-amber-200 underline-offset-2 text-[11px]">PAYABLE TO: {request.coBrokerName || "CO-BROKER"} (BUYER'S BROKER)</span>
                           <span className="text-[9px] text-slate-500 font-medium flex items-center gap-1">
@@ -711,7 +901,7 @@ export default function CDAPreview({ request, onClose, onApproved, onRejected, s
                     )}
 
                     {request.referralAmount > 0 && (
-                      <div className="flex justify-between items-start bg-white p-1.5 px-2 rounded-lg border border-slate-200">
+                      <div className="flex justify-between items-start bg-white px-2 pt-1.5 pb-[20px] rounded-lg border border-slate-200">
                         <div className="flex flex-col space-y-0.5">
                           <span className="font-bold text-slate-900 underline decoration-rose-300 underline-offset-2 text-[11px]">PAYABLE TO: {request.referralBrokerName || 'REFERRAL BROKERAGE'}</span>
                           <div className="text-[9px] text-slate-500 font-medium flex flex-col gap-0.5">
@@ -739,7 +929,7 @@ export default function CDAPreview({ request, onClose, onApproved, onRejected, s
                 </div>
               </section>
 
-              <div className="relative z-10 mt-auto pt-8 my-2 border-t border-slate-200/60 shrink-0">
+              <div className="relative z-10 mt-auto pt-3 my-1 border-t border-slate-200/60 shrink-0">
                 <div className="flex gap-12">
                   <div className="flex-1 text-center font-sans">
                     {/* Signature visually ABOVE the line */}
@@ -849,14 +1039,14 @@ export default function CDAPreview({ request, onClose, onApproved, onRejected, s
               <div className="space-y-4 my-5 text-base px-6 shrink-0 w-full">
                 <div className="flex items-baseline w-full">
                   <span className="font-serif text-slate-900 font-medium w-[220px] shrink-0">Date:</span>
-                  <span className="border-b border-slate-900 px-2 font-sans font-medium text-slate-900 pb-0.5 flex-1">
+                  <span className="border-b border-slate-900 px-2 font-sans font-medium text-slate-900 pb-[10px] flex-1">
                     {new Date().toLocaleDateString('en-US', { year: 'numeric', month: '2-digit', day: '2-digit' })}
                   </span>
                 </div>
 
                 <div className="flex items-baseline w-full">
                   <span className="font-serif text-slate-900 shrink-0 font-medium w-[220px]">Property Address or GF No:</span>
-                  <span className="border-b border-slate-900 px-2 font-sans font-medium text-slate-900 pb-0.5 flex-1">
+                  <span className="border-b border-slate-900 px-2 font-sans font-medium text-slate-900 pb-[10px] flex-1">
                     {request.propertyAddress || ''}
                   </span>
                 </div>
@@ -869,12 +1059,12 @@ export default function CDAPreview({ request, onClose, onApproved, onRejected, s
 
               {/* Beneficiary Details Table */}
               <div className="my-5 space-y-4 text-base px-6 max-w-2xl mx-auto w-full shrink-0">
-                <div className="flex items-baseline w-full">
+                <div className="flex items-baseline w-full pb-[10px]">
                   <span className="font-serif text-slate-900 font-medium w-[240px] shrink-0">Beneficiary Name:</span>
                   <span className="font-sans text-slate-900 font-normal flex-1">Moving Texas Realty</span>
                 </div>
 
-                <div className="flex items-start w-full">
+                <div className="flex items-start w-full pb-[10px]">
                   <span className="font-serif text-slate-900 font-medium w-[240px] shrink-0">Beneficiary Address:</span>
                   <div className="font-sans text-slate-900 font-normal leading-snug flex-1">
                     <p>525 Fort Worth Dr Ste 216</p>
@@ -882,17 +1072,17 @@ export default function CDAPreview({ request, onClose, onApproved, onRejected, s
                   </div>
                 </div>
 
-                <div className="flex items-baseline w-full">
+                <div className="flex items-baseline w-full pb-[10px]">
                   <span className="font-serif text-slate-900 font-medium w-[240px] shrink-0">Beneficiary Bank:</span>
                   <span className="font-sans text-slate-900 font-normal flex-1">Chase Bank NA</span>
                 </div>
 
-                <div className="flex items-baseline w-full">
+                <div className="flex items-baseline w-full pb-[10px]">
                   <span className="font-serif text-slate-900 font-medium w-[240px] shrink-0">Beneficiary Bank ABA:</span>
                   <span className="font-sans text-slate-900 font-normal flex-1">02100021</span>
                 </div>
 
-                <div className="flex items-baseline w-full">
+                <div className="flex items-baseline w-full pb-[10px]">
                   <span className="font-serif text-slate-900 font-medium w-[240px] shrink-0">Beneficiary Account Number:</span>
                   <span className="font-sans text-slate-900 font-normal flex-1">827955821</span>
                 </div>
@@ -902,11 +1092,11 @@ export default function CDAPreview({ request, onClose, onApproved, onRejected, s
               <div className="my-5 text-base px-6 shrink-0 w-full">
                 <div className="flex items-baseline gap-2 w-full">
                   <span className="font-serif text-slate-900 font-medium shrink-0">Reference: Address</span>
-                  <span className="border-b border-slate-900 px-2 text-center font-sans font-medium text-slate-900 pb-0.5 flex-1 truncate">
+                  <span className="border-b border-slate-900 px-2 text-center font-sans font-medium text-slate-900 pb-[10px] flex-1 truncate">
                     {(request.propertyAddress || '').split(',')[0].trim()}
                   </span>
                   <span className="font-serif text-slate-900 text-right font-medium shrink-0 ml-4">Agent</span>
-                  <span className="border-b border-slate-900 px-2 text-center font-sans font-medium text-slate-900 pb-0.5 flex-1 truncate">
+                  <span className="border-b border-slate-900 px-2 text-center font-sans font-medium text-slate-900 pb-[10px] flex-1 truncate">
                     {request.agentName || ''}
                   </span>
                 </div>
