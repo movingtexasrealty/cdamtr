@@ -154,7 +154,8 @@ export default function CreateRequest() {
     let salesList: any[] = [];
 
     const updateCapTotal = () => {
-      const capInfo = calculateAgentCapFromData(profile, cdaList, salesList);
+      const targetDate = formData.closingDate || new Date().toISOString();
+      const capInfo = calculateAgentCapFromData(profile, cdaList, salesList, targetDate);
       setYtdSplitPaid(capInfo.companySplitPaid);
     };
 
@@ -181,7 +182,7 @@ export default function CreateRequest() {
       unsubCDA();
       unsubSales();
     };
-  }, [profile]);
+  }, [profile, formData.closingDate]);
 
   useEffect(() => {
     const calculated = calculateCDASplit(formData, profile, ytdSplitPaid);

@@ -57,6 +57,62 @@ export function normalizeDate(dateStr: any): string {
   return str;
 }
 
+export function getAgentCapPeriod(
+  agentProfile?: any,
+  targetDate?: string | Date
+): { startDate: string; endDate: string; year: number } {
+  const normTarget = targetDate ? normalizeDate(targetDate) : normalizeDate(new Date());
+  const targetParts = normTarget.split('-');
+  const targetYear = parseInt(targetParts[0], 10) || new Date().getFullYear();
+  const targetMonth = parseInt(targetParts[1], 10) || 1;
+  const targetDay = parseInt(targetParts[2], 10) || 1;
+  const targetObj = new Date(targetYear, targetMonth - 1, targetDay);
+
+  const annivRaw = agentProfile?.commissionProfile?.anniversaryDate || agentProfile?.commissionProfile?.capStartDate;
+
+  if (annivRaw) {
+    try {
+      const normAnniv = normalizeDate(annivRaw);
+      const annivParts = normAnniv.split('-');
+      if (annivParts.length >= 3) {
+        const annivMonth = parseInt(annivParts[1], 10);
+        const annivDay = parseInt(annivParts[2], 10);
+
+        if (!isNaN(annivMonth) && !isNaN(annivDay) && annivMonth >= 1 && annivMonth <= 12) {
+          let startYear = targetYear;
+          const candidateDate = new Date(startYear, annivMonth - 1, annivDay);
+
+          if (targetObj < candidateDate) {
+            startYear -= 1;
+          }
+
+          const endYear = startYear + 1;
+          const startMonthStr = String(annivMonth).padStart(2, '0');
+          const startDayStr = String(annivDay).padStart(2, '0');
+
+          const startDate = `${startYear}-${startMonthStr}-${startDayStr}`;
+
+          const nextAnniv = new Date(endYear, annivMonth - 1, annivDay);
+          nextAnniv.setDate(nextAnniv.getDate() - 1);
+          const endMonthStr = String(nextAnniv.getMonth() + 1).padStart(2, '0');
+          const endDayStr = String(nextAnniv.getDate()).padStart(2, '0');
+          const endDate = `${nextAnniv.getFullYear()}-${endMonthStr}-${endDayStr}`;
+
+          return { startDate, endDate, year: startYear };
+        }
+      }
+    } catch (e) {
+      console.warn('Error calculating anniversary cap period:', e);
+    }
+  }
+
+  return {
+    startDate: `${targetYear}-01-01`,
+    endDate: `${targetYear}-12-31`,
+    year: targetYear
+  };
+}
+
 export function calculateAgentCapFromData(
   agent: {
     uid?: string;
@@ -67,12 +123,15 @@ export function calculateAgentCapFromData(
     commissionProfile?: any;
   },
   cdaRequests: any[],
-  salesHistory: any[]
+  salesHistory: any[],
+  targetDate?: string | Date
 ): AgentCapInfo {
   const license = (agent.licenseNumber || '').trim();
   const email = (agent.email || '').trim().toLowerCase();
   const name = (agent.name || '').trim().toLowerCase();
   const uid = agent.uid || agent.id;
+
+  const { startDate, endDate } = getAgentCapPeriod(agent, targetDate);
 
   const capAmount = agent.commissionProfile?.capAmount !== undefined 
     ? agent.commissionProfile.capAmount 
@@ -82,7 +141,7 @@ export function calculateAgentCapFromData(
     ? agent.commissionProfile.brokerSplit
     : 20;
 
-  // 1. Filter CDA Requests
+  // 1. Filter CDA Requests within YTD cap period
   let cdaVolume = 0;
   let cdaGross = 0;
   let cdaSplit = 0;
@@ -90,6 +149,9 @@ export function calculateAgentCapFromData(
   cdaRequests.forEach(req => {
     if (req.status !== 'approved') return;
     
+    const reqDate = normalizeDate(req.closingDate || req.approvedAt || req.createdAt);
+    if (reqDate < startDate || reqDate > endDate) return;
+
     // Check if req belongs to agent
     const matchUid = uid && req.agentId === uid;
     const matchLic = license && matchLicense(license, req.licenseNumber || req.agentLicense);
@@ -103,12 +165,15 @@ export function calculateAgentCapFromData(
     }
   });
 
-  // 2. Filter Sales History
+  // 2. Filter Sales History within YTD cap period
   let shVolume = 0;
   let shGross = 0;
   let shSplit = 0;
 
   salesHistory.forEach(sh => {
+    const shDate = normalizeDate(sh.date);
+    if (shDate < startDate || shDate > endDate) return;
+
     const shLic = String(sh.license || '').trim();
     
     const matchLic = license && matchLicense(license, shLic);
@@ -423,26 +488,9 @@ export async function recalculateAndPersistCDACaps(targetUid?: string) {
         commissionProfile: { capAmount: 15000, agentSplit: 80, brokerSplit: 20 }
       };
 
-      let salesHistorySplit = 0;
       const brokerSplitPct = matchedUser.commissionProfile?.brokerSplit !== undefined
         ? matchedUser.commissionProfile.brokerSplit
         : 20;
-
-      allSales.forEach(sh => {
-        const shLic = String(sh.license || '').trim();
-        const matchLic = matchedUser.licenseNumber && matchLicense(matchedUser.licenseNumber, shLic);
-        const matchName = matchedUser.name && shLic.toLowerCase() === matchedUser.name.trim().toLowerCase();
-
-        if (matchLic || matchName) {
-          const price = Number(sh.price) || 0;
-          const rate = Number(sh.rate) || 0;
-          const gross = price * (rate / 100);
-          const split = sh.companySplitAmount !== undefined
-            ? Number(sh.companySplitAmount)
-            : (gross * (brokerSplitPct / 100));
-          salesHistorySplit += split;
-        }
-      });
 
       items.sort((a, b) => {
         const dateA = new Date(a.cda.approvedAt || a.cda.createdAt || a.cda.closingDate || 0).getTime();
@@ -450,11 +498,41 @@ export async function recalculateAndPersistCDACaps(targetUid?: string) {
         return dateA - dateB;
       });
 
-      let runningYtdSplit = salesHistorySplit;
+      // Track running YTD split per cap period (e.g. "2026-01-01_2026-12-31")
+      const periodRunningSplits = new Map<string, number>();
 
       for (const item of items) {
         const req = item.cda;
-        const newCalc = calculateCDASplit(req, matchedUser, runningYtdSplit);
+        const targetDate = req.closingDate || req.approvedAt || req.createdAt || new Date();
+        const { startDate, endDate } = getAgentCapPeriod(matchedUser, targetDate);
+        const periodKey = `${startDate}_${endDate}`;
+
+        if (!periodRunningSplits.has(periodKey)) {
+          // Initialize with sales history split in this specific cap period
+          let initialSalesSplit = 0;
+          allSales.forEach(sh => {
+            const shDate = normalizeDate(sh.date);
+            if (shDate < startDate || shDate > endDate) return;
+
+            const shLic = String(sh.license || '').trim();
+            const matchLic = matchedUser.licenseNumber && matchLicense(matchedUser.licenseNumber, shLic);
+            const matchName = matchedUser.name && shLic.toLowerCase() === matchedUser.name.trim().toLowerCase();
+
+            if (matchLic || matchName) {
+              const price = Number(sh.price) || 0;
+              const rate = Number(sh.rate) || 0;
+              const gross = price * (rate / 100);
+              const split = sh.companySplitAmount !== undefined
+                ? Number(sh.companySplitAmount)
+                : (gross * (brokerSplitPct / 100));
+              initialSalesSplit += split;
+            }
+          });
+          periodRunningSplits.set(periodKey, initialSalesSplit);
+        }
+
+        const currentRunningYtdSplit = periodRunningSplits.get(periodKey) || 0;
+        const newCalc = calculateCDASplit(req, matchedUser, currentRunningYtdSplit);
 
         const currentBrokerSplit = Number(req.brokerSplitAmount ?? req.companySplitAmount ?? 0);
         const currentAgentGross = Number(req.agentGrossAmount ?? 0);
@@ -468,7 +546,7 @@ export async function recalculateAndPersistCDACaps(targetUid?: string) {
           });
         }
 
-        runningYtdSplit += newCalc.brokerSplitAmount;
+        periodRunningSplits.set(periodKey, currentRunningYtdSplit + newCalc.brokerSplitAmount);
       }
     }
   } catch (error) {

@@ -33,7 +33,7 @@ import {
 } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import CDAPreview from '../components/CDAPreview';
-import { matchLicense, calculateCDASplit, recalculateAndPersistCDACaps } from '../lib/capCalculator';
+import { matchLicense, calculateCDASplit, recalculateAndPersistCDACaps, getAgentCapPeriod, normalizeDate } from '../lib/capCalculator';
 
 export default function Requests() {
   const { profile } = useAuth();
@@ -106,7 +106,13 @@ export default function Requests() {
             ? matchedUser.commissionProfile.brokerSplit
             : 20;
 
+          const targetDate = targetReq.closingDate || targetReq.createdAt || new Date().toISOString();
+          const { startDate, endDate } = getAgentCapPeriod(matchedUser, targetDate);
+
           allSales.forEach(sh => {
+            const shDate = normalizeDate(sh.date);
+            if (shDate < startDate || shDate > endDate) return;
+
             const shLic = String(sh.license || '').trim();
             const matchLic = matchedUser.licenseNumber && matchLicense(matchedUser.licenseNumber, shLic);
             const matchName = matchedUser.name && shLic.toLowerCase() === matchedUser.name.trim().toLowerCase();
@@ -124,6 +130,10 @@ export default function Requests() {
 
           allCda.forEach(r => {
             if (r.id === id || r.status !== 'approved') return;
+
+            const rDate = normalizeDate(r.closingDate || r.approvedAt || r.createdAt);
+            if (rDate < startDate || rDate > endDate) return;
+
             const rLic = r.licenseNumber || r.agentLicense || '';
             const rEmail = r.agentEmail || '';
             const rName = r.agentName || '';
