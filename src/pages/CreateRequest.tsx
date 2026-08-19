@@ -49,6 +49,7 @@ export default function CreateRequest() {
     bonusRateValue: undefined as number | undefined,
     referralRateType: 'percentage' as 'percentage' | 'flat',
     referralRateValue: undefined as number | undefined,
+    rebateRecipient: 'Buyer' as 'Buyer' | 'Seller',
     rebateRateType: 'percentage' as 'percentage' | 'flat',
     rebateRateValue: undefined as number | undefined,
     referralAgentName: '',
@@ -115,6 +116,7 @@ export default function CreateRequest() {
             bonusRateValue: data.bonusRateValue,
             referralRateType: data.referralRateType || 'percentage',
             referralRateValue: data.referralRateValue,
+            rebateRecipient: data.rebateRecipient || (data.representation === 'Seller' ? 'Seller' : 'Buyer'),
             rebateRateType: data.rebateRateType || 'percentage',
             rebateRateValue: data.rebateRateValue,
             referralAgentName: data.referralAgentName || '',
@@ -578,27 +580,56 @@ export default function CreateRequest() {
             </div>
 
             <div>
-              <div className="flex justify-between items-center mb-2">
-                <label className="text-sm font-semibold text-slate-700">Rebate / Discount to Client</label>
-                <div className="flex items-center gap-2 bg-slate-100 border border-slate-200 rounded-full px-2.5 py-1 select-none">
-                  <span className={`text-xs font-black transition-all ${formData.rebateRateType === 'percentage' ? 'text-blue-600 scale-110' : 'text-slate-400'}`}>%</span>
-                  <button
-                    type="button"
-                    onClick={() => setFormData({ 
-                      ...formData, 
-                      rebateRateType: formData.rebateRateType === 'percentage' ? 'flat' : 'percentage' 
-                    })}
-                    className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out outline-none ${
-                      formData.rebateRateType === 'flat' ? 'bg-blue-600' : 'bg-slate-300'
-                    }`}
-                  >
-                    <span
-                      className={`pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow-sm transition duration-200 ease-in-out ${
-                        formData.rebateRateType === 'flat' ? 'translate-x-4' : 'translate-x-0'
+              <div className="flex flex-col sm:flex-row sm:justify-between sm:items-center gap-2 mb-2">
+                <label className="text-sm font-semibold text-slate-700">Rebate / Credit</label>
+                <div className="flex items-center gap-2">
+                  {/* Recipient Specifier: Buyer or Seller */}
+                  <div className="flex items-center bg-slate-100 p-0.5 rounded-lg border border-slate-200 text-xs font-bold">
+                    <button
+                      type="button"
+                      onClick={() => setFormData({ ...formData, rebateRecipient: 'Buyer' })}
+                      className={`px-2.5 py-1 rounded-md transition-all ${
+                        (formData.rebateRecipient || 'Buyer') === 'Buyer'
+                          ? 'bg-white text-blue-600 shadow-sm'
+                          : 'text-slate-500 hover:text-slate-700'
                       }`}
-                    />
-                  </button>
-                  <span className={`text-xs font-black transition-all ${formData.rebateRateType === 'flat' ? 'text-blue-600 scale-110' : 'text-slate-400'}`}>$</span>
+                    >
+                      Buyer
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setFormData({ ...formData, rebateRecipient: 'Seller' })}
+                      className={`px-2.5 py-1 rounded-md transition-all ${
+                        formData.rebateRecipient === 'Seller'
+                          ? 'bg-white text-blue-600 shadow-sm'
+                          : 'text-slate-500 hover:text-slate-700'
+                      }`}
+                    >
+                      Seller
+                    </button>
+                  </div>
+
+                  {/* % / $ Toggle */}
+                  <div className="flex items-center gap-1.5 bg-slate-100 border border-slate-200 rounded-full px-2 py-1 select-none">
+                    <span className={`text-xs font-black transition-all ${formData.rebateRateType === 'percentage' ? 'text-blue-600 scale-110' : 'text-slate-400'}`}>%</span>
+                    <button
+                      type="button"
+                      onClick={() => setFormData({ 
+                        ...formData, 
+                        rebateRateType: formData.rebateRateType === 'percentage' ? 'flat' : 'percentage' 
+                      })}
+                      className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out outline-none ${
+                        formData.rebateRateType === 'flat' ? 'bg-blue-600' : 'bg-slate-300'
+                      }`}
+                    >
+                      <span
+                        className={`pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow-sm transition duration-200 ease-in-out ${
+                          formData.rebateRateType === 'flat' ? 'translate-x-4' : 'translate-x-0'
+                        }`}
+                      />
+                    </button>
+                    <span className={`text-xs font-black transition-all ${formData.rebateRateType === 'flat' ? 'text-blue-600 scale-110' : 'text-slate-400'}`}>$</span>
+                  </div>
                 </div>
               </div>
               <div className="relative">
@@ -618,7 +649,7 @@ export default function CreateRequest() {
               </div>
               {formData.rebateRateType === 'percentage' && calc.rebateAmount > 0 && (
                 <p className="text-[11px] text-slate-500 font-sans mt-1.5 flex items-center gap-1">
-                  Calculated rebate amount: <span className="font-bold text-slate-700">${calc.rebateAmount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+                  Calculated {formData.rebateRecipient || 'Buyer'} credit amount: <span className="font-bold text-slate-700">${calc.rebateAmount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
                 </p>
               )}
             </div>

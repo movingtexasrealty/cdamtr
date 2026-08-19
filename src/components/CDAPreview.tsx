@@ -813,7 +813,14 @@ export default function CDAPreview({ request, onClose, onApproved, onRejected, s
                       )}
                       {request.rebateAmount > 0 && (
                         <div className="flex justify-between text-rose-600">
-                          <span>Client Rebate / Discount Deduction {request.rebateRateType === 'percentage' ? `(${request.rebateRateValue}% of Sale Price)` : '(Flat)'}</span>
+                          <span>
+                            {request.rebateRecipient === 'Buyer'
+                              ? 'Buyer Credit / Rebate Deduction'
+                              : request.rebateRecipient === 'Seller'
+                              ? 'Seller Credit / Rebate Deduction'
+                              : `${request.representation ? `${request.representation} Credit / Rebate Deduction` : 'Client Rebate / Discount Deduction'}`}{' '}
+                            {request.rebateRateType === 'percentage' ? `(${request.rebateRateValue}% of Sale Price)` : '(Flat)'}
+                          </span>
                           <span className="font-bold">-${request.rebateAmount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
                         </div>
                       )}
