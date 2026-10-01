@@ -390,10 +390,8 @@ export function calculateCDASplit(
     } else if (ytdSplitPaid + brokerSplit > capAmount) {
       const remainingToCap = Math.max(0, capAmount - ytdSplitPaid);
       const isLease = req.propertyType === 'Lease';
-      const fee = isLease ? postCapLeaseFee : postCapStdFee;
 
-      let bFee = enablePostCapFee ? Math.max(remainingToCap, fee) : remainingToCap;
-      bFee = Math.min(netToMtr, bFee);
+      let bFee = Math.min(netToMtr, remainingToCap);
 
       if (isLease && netToMtr > 800) {
         let aGross = netToMtr - bFee - mentorSplitAmount;
