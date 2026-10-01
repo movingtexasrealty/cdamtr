@@ -114,10 +114,16 @@ export default function Requests() {
             if (shDate < startDate || shDate > endDate) return;
 
             const shLic = String(sh.license || '').trim();
-            const matchLic = matchedUser.licenseNumber && matchLicense(matchedUser.licenseNumber, shLic);
-            const matchName = matchedUser.name && shLic.toLowerCase() === matchedUser.name.trim().toLowerCase();
+            const shName = String(sh.agentName || sh.name || '').trim().toLowerCase();
+            const shEmail = String(sh.agentEmail || sh.email || '').trim().toLowerCase();
+            const shUid = String(sh.agentId || '').trim();
 
-            if (matchLic || matchName) {
+            const matchUid = matchedUser.uid && (shUid === matchedUser.uid || shUid === matchedUser.id);
+            const matchLic = matchedUser.licenseNumber && matchLicense(matchedUser.licenseNumber, shLic);
+            const matchEmail = matchedUser.email && shEmail === matchedUser.email.toLowerCase();
+            const matchName = matchedUser.name && (shLic.toLowerCase() === matchedUser.name.trim().toLowerCase() || shName === matchedUser.name.trim().toLowerCase());
+
+            if (matchUid || matchLic || matchEmail || matchName) {
               const price = Number(sh.price) || 0;
               const rate = Number(sh.rate) || 0;
               const gross = price * (rate / 100);

@@ -33,6 +33,7 @@ export default function CreateRequest() {
   const [showPreview, setShowPreview] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [originalRequest, setOriginalRequest] = useState<any | null>(null);
+  const [targetAgentProfile, setTargetAgentProfile] = useState<any | null>(null);
 
   const [formData, setFormData] = useState({
     propertyType: '' as 'Home Sale' | 'Lease' | 'Land' | 'Commercial' | 'Referral' | '',
@@ -101,6 +102,17 @@ export default function CreateRequest() {
 
           setOriginalRequest({ id: docSnap.id, ...data });
 
+          if (profile.role === 'admin' && data.agentId && data.agentId !== profile.uid) {
+            try {
+              const uSnap = await getDoc(doc(db, 'users', data.agentId));
+              if (uSnap.exists()) {
+                setTargetAgentProfile({ id: uSnap.id, uid: uSnap.id, ...uSnap.data() });
+              }
+            } catch (uErr) {
+              console.error('Error fetching target agent profile for edit:', uErr);
+            }
+          }
+
           setFormData({
             propertyType: data.propertyType || '',
             representation: data.representation || '',
@@ -150,22 +162,30 @@ export default function CreateRequest() {
   useEffect(() => {
     if (!profile) return;
 
+    const effectiveAgent = targetAgentProfile || profile;
+    const isCurrentUserAdmin = profile?.role === 'admin';
+
     let cdaList: any[] = [];
     let salesList: any[] = [];
 
     const updateCapTotal = () => {
       const targetDate = formData.closingDate || new Date().toISOString();
-      const capInfo = calculateAgentCapFromData(profile, cdaList, salesList, targetDate);
+      const capInfo = calculateAgentCapFromData(effectiveAgent, cdaList, salesList, targetDate);
       setYtdSplitPaid(capInfo.companySplitPaid);
     };
 
-    const qCDA = query(
-      collection(db, 'cdaRequests'),
-      where('status', '==', 'approved')
-    );
+    const cdaRef = collection(db, 'cdaRequests');
+    // Important: Non-admin agents must include where('agentId', '==', profile.uid) to satisfy Firestore security rules
+    const qCDA = isCurrentUserAdmin
+      ? (effectiveAgent?.uid && effectiveAgent.uid !== profile.uid 
+          ? query(cdaRef, where('agentId', '==', effectiveAgent.uid))
+          : cdaRef)
+      : query(cdaRef, where('agentId', '==', profile.uid));
 
     const unsubCDA = onSnapshot(qCDA, (snapshot) => {
-      cdaList = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      cdaList = snapshot.docs
+        .map(doc => ({ id: doc.id, ...doc.data() }))
+        .filter((r: any) => r.status === 'approved' && (!id || r.id !== id));
       updateCapTotal();
     }, (err) => {
       console.error('Error fetching agent CDA production for capping:', err);
@@ -182,12 +202,13 @@ export default function CreateRequest() {
       unsubCDA();
       unsubSales();
     };
-  }, [profile, formData.closingDate]);
+  }, [profile, targetAgentProfile, formData.closingDate, id]);
 
   useEffect(() => {
-    const calculated = calculateCDASplit(formData, profile, ytdSplitPaid);
+    const effectiveAgent = targetAgentProfile || profile;
+    const calculated = calculateCDASplit(formData, effectiveAgent, ytdSplitPaid);
     setCalc(calculated);
-  }, [formData, profile, ytdSplitPaid]);
+  }, [formData, profile, targetAgentProfile, ytdSplitPaid]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();

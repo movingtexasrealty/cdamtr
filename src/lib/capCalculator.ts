@@ -175,11 +175,16 @@ export function calculateAgentCapFromData(
     if (shDate < startDate || shDate > endDate) return;
 
     const shLic = String(sh.license || '').trim();
+    const shName = String(sh.agentName || sh.name || '').trim().toLowerCase();
+    const shEmail = String(sh.agentEmail || sh.email || '').trim().toLowerCase();
+    const shUid = String(sh.agentId || '').trim();
     
+    const matchUid = uid && (shUid === uid);
     const matchLic = license && matchLicense(license, shLic);
-    const matchName = name && shLic.toLowerCase() === name;
+    const matchEmail = email && shEmail === email;
+    const matchName = name && (shLic.toLowerCase() === name || shName === name);
 
-    if (matchLic || matchName) {
+    if (matchUid || matchLic || matchEmail || matchName) {
       const price = Number(sh.price) || 0;
       const rate = Number(sh.rate) || 0;
       const gross = price * (rate / 100);
@@ -199,7 +204,13 @@ export function calculateAgentCapFromData(
 
   const isCapped = capAmount > 0 ? companySplitPaid >= capAmount : false;
   const remainingToCap = capAmount > 0 ? Math.max(0, capAmount - companySplitPaid) : 0;
-  const capPercentage = capAmount > 0 ? Math.min(100, Math.round((companySplitPaid / capAmount) * 100)) : 100;
+  
+  // Format cap percentage to 2 decimal places (e.g. 99.98%).
+  // If not fully capped, ensure it never prematurely rounds up to 100%.
+  const rawPct = capAmount > 0 ? (companySplitPaid / capAmount) * 100 : 100;
+  const capPercentage = capAmount > 0 
+    ? (isCapped ? 100 : Math.min(99.99, Number(rawPct.toFixed(2)))) 
+    : 100;
 
   return {
     totalVolume,
@@ -513,10 +524,16 @@ export async function recalculateAndPersistCDACaps(targetUid?: string) {
             if (shDate < startDate || shDate > endDate) return;
 
             const shLic = String(sh.license || '').trim();
-            const matchLic = matchedUser.licenseNumber && matchLicense(matchedUser.licenseNumber, shLic);
-            const matchName = matchedUser.name && shLic.toLowerCase() === matchedUser.name.trim().toLowerCase();
+            const shName = String(sh.agentName || sh.name || '').trim().toLowerCase();
+            const shEmail = String(sh.agentEmail || sh.email || '').trim().toLowerCase();
+            const shUid = String(sh.agentId || '').trim();
 
-            if (matchLic || matchName) {
+            const matchUid = matchedUser.uid && (shUid === matchedUser.uid || shUid === matchedUser.id);
+            const matchLic = matchedUser.licenseNumber && matchLicense(matchedUser.licenseNumber, shLic);
+            const matchEmail = matchedUser.email && shEmail === matchedUser.email.toLowerCase();
+            const matchName = matchedUser.name && (shLic.toLowerCase() === matchedUser.name.trim().toLowerCase() || shName === matchedUser.name.trim().toLowerCase());
+
+            if (matchUid || matchLic || matchEmail || matchName) {
               const price = Number(sh.price) || 0;
               const rate = Number(sh.rate) || 0;
               const gross = price * (rate / 100);
@@ -545,6 +562,37 @@ export async function recalculateAndPersistCDACaps(targetUid?: string) {
         }
 
         periodRunningSplits.set(periodKey, currentRunningYtdSplit + newCalc.brokerSplitAmount);
+      }
+
+      // Also ensure pending CDA requests are synchronized with the agent's current running YTD split
+      const pendingCDAs = allCda.filter(r => r.status === 'pending');
+      for (const pendingReq of pendingCDAs) {
+        const lic = pendingReq.licenseNumber || pendingReq.agentLicense || '';
+        const email = pendingReq.agentEmail || '';
+        const name = pendingReq.agentName || '';
+        const uid = pendingReq.agentId || '';
+
+        const isMatch = (uid && (matchedUser.uid === uid || matchedUser.id === uid)) ||
+          (lic && matchLicense(matchedUser.licenseNumber, lic)) ||
+          (email && matchedUser.email && email.toLowerCase() === matchedUser.email.toLowerCase()) ||
+          (name && matchedUser.name && name.toLowerCase() === matchedUser.name.trim().toLowerCase());
+
+        if (isMatch) {
+          const targetDate = pendingReq.closingDate || pendingReq.createdAt || new Date();
+          const { startDate, endDate } = getAgentCapPeriod(matchedUser, targetDate);
+          const periodKey = `${startDate}_${endDate}`;
+          const currentRunningYtdSplit = periodRunningSplits.get(periodKey) || 0;
+          const newCalc = calculateCDASplit(pendingReq, matchedUser, currentRunningYtdSplit);
+
+          const curSplit = Number(pendingReq.brokerSplitAmount ?? pendingReq.companySplitAmount ?? 0);
+          const curGross = Number(pendingReq.agentGrossAmount ?? 0);
+
+          if (Math.abs(curSplit - newCalc.brokerSplitAmount) > 0.01 || Math.abs(curGross - newCalc.agentGrossAmount) > 0.01) {
+            await updateDoc(doc(db, 'cdaRequests', pendingReq.id), {
+              ...newCalc
+            });
+          }
+        }
       }
     }
   } catch (error) {

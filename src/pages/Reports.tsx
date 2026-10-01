@@ -453,10 +453,11 @@ export default function Reports() {
 
   const chartData = Object.values(agentProductionMap)
     .map((item: any) => {
-      const capPct = item.capAmount > 0 
-        ? Math.min(100, Math.round((item.brokerSplitPaid / item.capAmount) * 100))
-        : 100;
+      const rawPct = item.capAmount > 0 ? (item.brokerSplitPaid / item.capAmount) * 100 : 100;
       const isCapped = item.capAmount > 0 ? item.brokerSplitPaid >= item.capAmount : false;
+      const capPct = item.capAmount > 0 
+        ? (isCapped ? 100 : Math.min(99.99, Number(rawPct.toFixed(2))))
+        : 100;
       return {
         ...item,
         capPct,
@@ -1335,7 +1336,7 @@ export default function Reports() {
                       </p>
                     </div>
                     <div className="text-right">
-                      <span className="text-2xl font-black text-white">{selectedAgent.capPct || 0}%</span>
+                      <span className="text-2xl font-black text-white">{selectedAgent.isCapped ? '100%' : `${(selectedAgent.capPct || 0).toFixed(2)}%`}</span>
                       <p className="text-[11px] text-slate-400 font-medium">
                         {selectedAgent.isCapped 
                           ? '100% Agent Split Unlocked' 

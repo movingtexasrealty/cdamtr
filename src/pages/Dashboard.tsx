@@ -325,7 +325,14 @@ export default function Dashboard() {
                 : `$${Math.max(0, (profile?.commissionProfile?.capAmount !== undefined ? profile.commissionProfile.capAmount : 15000) - stats.splitContribution).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`} 
               subLabel={profile?.commissionProfile?.isInexperienced 
                 ? "Inexperienced status exempts capping limits"
-                : `Paid: $${stats.splitContribution.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} of $${(profile?.commissionProfile?.capAmount !== undefined ? profile.commissionProfile.capAmount : 15000).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} cap`}
+                : (() => {
+                    const cap = profile?.commissionProfile?.capAmount !== undefined ? profile.commissionProfile.capAmount : 15000;
+                    const paid = stats.splitContribution;
+                    const isCapped = cap > 0 && paid >= cap;
+                    const rawPct = cap > 0 ? (paid / cap) * 100 : 100;
+                    const pctStr = isCapped ? '100%' : `${Math.min(99.99, rawPct).toFixed(2)}%`;
+                    return `Paid: $${paid.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} of $${cap.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} cap (${pctStr})`;
+                  })()}
               color="orange"
             />
             <StatCard 
