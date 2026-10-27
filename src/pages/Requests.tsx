@@ -382,11 +382,11 @@ export default function Requests() {
                         >
                           <Eye size={20} />
                         </button>
-                        {req.status === 'rejected' && req.agentId === profile?.uid && (
+                        {(profile?.role === 'admin' || (req.status === 'rejected' && req.agentId === profile?.uid)) && (
                           <Link 
                             to={`/requests/edit/${req.id}`}
                             className="p-2 text-slate-400 hover:text-amber-600 hover:bg-amber-50 rounded-lg transition-colors"
-                            title="Edit Rejected Request"
+                            title={profile?.role === 'admin' ? "Edit CDA Request" : "Edit Rejected Request"}
                           >
                             <Pencil size={18} />
                           </Link>

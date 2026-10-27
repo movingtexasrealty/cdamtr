@@ -219,10 +219,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const loginWithEmail = async (email: string, pass: string) => {
     try {
       setError(null);
-      await signInWithEmailAndPassword(auth, email, pass);
+      const userEmail = email.toLowerCase().trim();
+      await signInWithEmailAndPassword(auth, userEmail, pass);
     } catch (err: any) {
-      if (err.code === 'auth/user-not-found' || err.code === 'auth/wrong-password') {
+      if (err.code === 'auth/user-not-found' || err.code === 'auth/wrong-password' || err.code === 'auth/invalid-credential') {
         setError('Invalid email or password.');
+      } else if (err.code === 'auth/operation-not-allowed') {
+        setError('Email/Password sign-in is currently disabled in Firebase Console. Please enable Email/Password under Authentication > Sign-in method.');
       } else {
         setError(err.message);
       }
@@ -241,6 +244,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         setError('Password should be at least 6 characters.');
       } else if (err.code === 'auth/invalid-email') {
         setError('Please enter a valid email address.');
+      } else if (err.code === 'auth/operation-not-allowed') {
+        setError('Email/Password sign-in is disabled in your Firebase project. Please enable Email/Password under Firebase Console > Authentication > Sign-in method.');
       } else {
         setError(err.message);
       }
@@ -250,10 +255,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const resetPassword = async (email: string) => {
     try {
       setError(null);
-      await sendPasswordResetEmail(auth, email);
+      const userEmail = email.toLowerCase().trim();
+      await sendPasswordResetEmail(auth, userEmail);
       alert('Password reset email sent!');
     } catch (err: any) {
-      setError(err.message);
+      if (err.code === 'auth/operation-not-allowed') {
+        setError('Email/Password provider is disabled in Firebase Console.');
+      } else {
+        setError(err.message);
+      }
     }
   };
 

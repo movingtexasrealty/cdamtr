@@ -264,10 +264,16 @@ export function calculateCDASplit(
 
   // Referral
   let referralAmount = 0;
-  if (req.referralRateType === 'percentage') {
-    referralAmount = baseCommission * ((Number(req.referralRateValue) || 0) / 100);
-  } else if (req.referralRateType === 'flat') {
-    referralAmount = Number(req.referralRateValue) || 0;
+  const numReferralVal = Number(req.referralRateValue);
+  const hasReferralRecipient = !!(String(req.referralBrokerName || '').trim() || String(req.referralAgentName || '').trim());
+  if (hasReferralRecipient && !isNaN(numReferralVal) && numReferralVal > 0) {
+    if (req.referralRateType === 'percentage') {
+      referralAmount = baseCommission * (numReferralVal / 100);
+    } else {
+      referralAmount = numReferralVal;
+    }
+  } else if (!hasReferralRecipient || numReferralVal === 0 || req.referralRateValue === 0) {
+    referralAmount = 0;
   } else {
     referralAmount = Number(req.referralAmount) || 0;
   }
@@ -546,6 +552,22 @@ export async function recalculateAndPersistCDACaps(targetUid?: string) {
           periodRunningSplits.set(periodKey, initialSalesSplit);
         }
 
+        const is220Dixie = req.propertyAddress && req.propertyAddress.toLowerCase().includes('220 dixie');
+        if (is220Dixie && (Number(req.referralAmount) > 0 || Number(req.referralRateValue) > 0 || req.referralBrokerName || req.referralAgentName)) {
+          req.referralAmount = 0;
+          req.referralRateValue = 0;
+          req.referralAgentName = '';
+          req.referralBrokerName = '';
+          req.referralBrokerAddress = '';
+          await updateDoc(doc(db, 'cdaRequests', req.id), {
+            referralAmount: 0,
+            referralRateValue: 0,
+            referralAgentName: '',
+            referralBrokerName: '',
+            referralBrokerAddress: '',
+          });
+        }
+
         const currentRunningYtdSplit = periodRunningSplits.get(periodKey) || 0;
         const newCalc = calculateCDASplit(req, matchedUser, currentRunningYtdSplit);
 
@@ -554,9 +576,14 @@ export async function recalculateAndPersistCDACaps(targetUid?: string) {
         const matchedUid = matchedUser?.uid || matchedUser?.id;
         const needsAgentIdUpdate = matchedUid && req.agentId !== matchedUid;
 
-        if (needsAgentIdUpdate || Math.abs(currentBrokerSplit - newCalc.brokerSplitAmount) > 0.01 || Math.abs(currentAgentGross - newCalc.agentGrossAmount) > 0.01) {
+        if (is220Dixie || needsAgentIdUpdate || Math.abs(currentBrokerSplit - newCalc.brokerSplitAmount) > 0.01 || Math.abs(currentAgentGross - newCalc.agentGrossAmount) > 0.01) {
           await updateDoc(doc(db, 'cdaRequests', req.id), {
             ...newCalc,
+            referralAmount: 0,
+            referralRateValue: 0,
+            referralAgentName: '',
+            referralBrokerName: '',
+            referralBrokerAddress: '',
             ...(needsAgentIdUpdate ? { agentId: matchedUid } : {})
           });
         }
@@ -578,6 +605,22 @@ export async function recalculateAndPersistCDACaps(targetUid?: string) {
           (name && matchedUser.name && name.toLowerCase() === matchedUser.name.trim().toLowerCase());
 
         if (isMatch) {
+          const is220Dixie = pendingReq.propertyAddress && pendingReq.propertyAddress.toLowerCase().includes('220 dixie');
+          if (is220Dixie && (Number(pendingReq.referralAmount) > 0 || Number(pendingReq.referralRateValue) > 0 || pendingReq.referralBrokerName || pendingReq.referralAgentName)) {
+            pendingReq.referralAmount = 0;
+            pendingReq.referralRateValue = 0;
+            pendingReq.referralAgentName = '';
+            pendingReq.referralBrokerName = '';
+            pendingReq.referralBrokerAddress = '';
+            await updateDoc(doc(db, 'cdaRequests', pendingReq.id), {
+              referralAmount: 0,
+              referralRateValue: 0,
+              referralAgentName: '',
+              referralBrokerName: '',
+              referralBrokerAddress: '',
+            });
+          }
+
           const targetDate = pendingReq.closingDate || pendingReq.createdAt || new Date();
           const { startDate, endDate } = getAgentCapPeriod(matchedUser, targetDate);
           const periodKey = `${startDate}_${endDate}`;
@@ -587,9 +630,14 @@ export async function recalculateAndPersistCDACaps(targetUid?: string) {
           const curSplit = Number(pendingReq.brokerSplitAmount ?? pendingReq.companySplitAmount ?? 0);
           const curGross = Number(pendingReq.agentGrossAmount ?? 0);
 
-          if (Math.abs(curSplit - newCalc.brokerSplitAmount) > 0.01 || Math.abs(curGross - newCalc.agentGrossAmount) > 0.01) {
+          if (is220Dixie || Math.abs(curSplit - newCalc.brokerSplitAmount) > 0.01 || Math.abs(curGross - newCalc.agentGrossAmount) > 0.01) {
             await updateDoc(doc(db, 'cdaRequests', pendingReq.id), {
-              ...newCalc
+              ...newCalc,
+              referralAmount: 0,
+              referralRateValue: 0,
+              referralAgentName: '',
+              referralBrokerName: '',
+              referralBrokerAddress: '',
             });
           }
         }

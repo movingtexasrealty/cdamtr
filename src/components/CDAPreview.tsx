@@ -6,7 +6,8 @@
 import { jsPDF } from 'jspdf';
 import html2canvas from 'html2canvas';
 import { useRef, useState, useEffect } from 'react';
-import { Mail, Download, X, CheckCircle, MapPin, Phone, XCircle, AlertCircle } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
+import { Mail, Download, X, CheckCircle, MapPin, Phone, XCircle, AlertCircle, Pencil } from 'lucide-react';
 import { useAuth } from '../AuthContext';
 import { db } from '../firebase';
 import { doc, updateDoc, collection, query, where, getDocs } from 'firebase/firestore';
@@ -520,6 +521,59 @@ export default function CDAPreview({ request, onClose, onApproved, onRejected, s
     window.open(gmailUrl, '_blank', 'noopener,noreferrer');
   };
 
+  const navigate = useNavigate();
+  const [isRemovingReferral, setIsRemovingReferral] = useState(false);
+
+  const handleRemoveReferral = async () => {
+    if (!confirm('Are you sure you want to remove the referral fee from this CDA? The gross compensation and agent distribution will be updated immediately.')) return;
+    try {
+      setIsRemovingReferral(true);
+      const { calculateCDASplit, recalculateAndPersistCDACaps } = await import('../lib/capCalculator');
+      
+      const { getDocs, collection } = await import('firebase/firestore');
+      const usersSnap = await getDocs(collection(db, 'users'));
+      const allUsers = usersSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+      const matchedUser = allUsers.find((u: any) => 
+        (request.agentId && (u.uid === request.agentId || u.id === request.agentId)) ||
+        (request.agentEmail && u.email && u.email.toLowerCase() === request.agentEmail.toLowerCase())
+      ) || {
+        commissionProfile: { capAmount: 15000, agentSplit: 80, brokerSplit: 20 }
+      };
+
+      const updatedReq = {
+        ...request,
+        referralAmount: 0,
+        referralRateValue: 0,
+        referralAgentName: '',
+        referralBrokerName: '',
+        referralBrokerAddress: '',
+      };
+
+      const newSplits = calculateCDASplit(updatedReq, matchedUser, 0);
+
+      await updateDoc(doc(db, 'cdaRequests', request.id), {
+        referralAmount: 0,
+        referralRateValue: 0,
+        referralAgentName: '',
+        referralBrokerName: '',
+        referralBrokerAddress: '',
+        grossCommission: newSplits.grossCommission,
+        agentGrossAmount: newSplits.agentGrossAmount,
+        brokerSplitAmount: newSplits.brokerSplitAmount,
+        companySplitAmount: newSplits.companySplitAmount,
+      });
+
+      await recalculateAndPersistCDACaps();
+      alert('Referral fee removed successfully and CDA updated!');
+      onClose();
+    } catch (err) {
+      console.error('Error removing referral:', err);
+      alert('Failed to remove referral. Please try again.');
+    } finally {
+      setIsRemovingReferral(false);
+    }
+  };
+
   return (
     <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
       <div className="bg-white w-full max-w-4xl max-h-[90vh] rounded-3xl shadow-2xl flex flex-col overflow-hidden animate-in fade-in zoom-in duration-200">
@@ -528,12 +582,46 @@ export default function CDAPreview({ request, onClose, onApproved, onRejected, s
             <h3 className="text-xl font-bold text-slate-800">CDA Preview</h3>
             <p className="text-sm text-slate-500 font-medium">Review the Disbursement Authorization before final approval.</p>
           </div>
-          <button onClick={onClose} className="p-2 hover:bg-slate-200 rounded-full transition-colors">
-            <X size={24} />
-          </button>
+          <div className="flex items-center gap-2">
+            {profile?.role === 'admin' && (
+              <button 
+                onClick={() => { onClose(); navigate(`/requests/edit/${request.id}`); }}
+                className="flex items-center gap-1.5 px-3 py-1.5 bg-white border border-slate-200 hover:bg-slate-100 text-slate-700 rounded-xl text-xs font-bold transition-all shadow-sm"
+                title="Edit this CDA request form"
+              >
+                <Pencil size={14} className="text-amber-600" />
+                <span>Edit Request</span>
+              </button>
+            )}
+            <button onClick={onClose} className="p-2 hover:bg-slate-200 rounded-full transition-colors">
+              <X size={24} />
+            </button>
+          </div>
         </div>
 
         <div className="flex-1 overflow-y-auto p-8 bg-slate-100/50">
+          {profile?.role === 'admin' && request.referralAmount > 0 && (
+            <div className="mb-6 mx-auto w-[210mm] bg-amber-50 border border-amber-200 p-4 rounded-2xl flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 font-sans animate-in fade-in duration-200">
+              <div className="flex items-start gap-3">
+                <AlertCircle className="text-amber-600 shrink-0 mt-0.5" size={20} />
+                <div className="text-xs text-amber-900">
+                  <p className="font-bold text-sm text-amber-950">Referral Fee Detected: ${request.referralAmount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</p>
+                  <p className="text-slate-600 mt-0.5">
+                    If this transaction does not have a referring agent, you can remove it immediately without deleting or redoing the CDA.
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={handleRemoveReferral}
+                disabled={isRemovingReferral}
+                className="px-4 py-2 bg-rose-600 text-white rounded-xl text-xs font-bold hover:bg-rose-700 transition-all shadow-sm shrink-0 whitespace-nowrap active:scale-95 disabled:opacity-50"
+              >
+                {isRemovingReferral ? 'Removing...' : 'Remove Referral Fee'}
+              </button>
+            </div>
+          )}
+
           {/* Document Tab Navigation */}
           <div className="flex items-center justify-center gap-3 max-w-[210mm] mx-auto mb-6 font-sans">
             <button

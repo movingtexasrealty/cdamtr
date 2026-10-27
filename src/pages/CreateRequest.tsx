@@ -278,6 +278,10 @@ export default function CreateRequest() {
     setLoading(true);
     setError(null);
     try {
+      const isReferralActive = (calc.referralAmount > 0) && !!(formData.referralRateValue && formData.referralRateValue > 0);
+      const isBonusActive = (calc.bonusAmount > 0) && !!(formData.bonusRateValue && formData.bonusRateValue > 0);
+      const isRebateActive = (calc.rebateAmount > 0) && !!(formData.rebateRateValue && formData.rebateRateValue > 0);
+
       const requestData = {
         agentId: originalRequest?.agentId || profile.uid,
         agentName: originalRequest?.agentName || profile.name,
@@ -285,16 +289,33 @@ export default function CreateRequest() {
         agentPhone: originalRequest?.agentPhone || profile.phone || '',
         agentLicense: originalRequest?.agentLicense || profile.licenseNumber || '',
         ...formData,
+        ...calc,
+        referralRateValue: isReferralActive ? (formData.referralRateValue || 0) : 0,
+        referralAmount: isReferralActive ? (calc.referralAmount || 0) : 0,
+        referralAgentName: isReferralActive ? (formData.referralAgentName || '') : '',
+        referralBrokerName: isReferralActive ? (formData.referralBrokerName || '') : '',
+        referralBrokerAddress: isReferralActive ? (formData.referralBrokerAddress || '') : '',
+        bonusRateValue: isBonusActive ? (formData.bonusRateValue || 0) : 0,
+        bonusAmount: isBonusActive ? (calc.bonusAmount || 0) : 0,
+        rebateRateValue: isRebateActive ? (formData.rebateRateValue || 0) : 0,
+        rebateAmount: isRebateActive ? (calc.rebateAmount || 0) : 0,
+        hasCoBroker: !!formData.hasCoBroker,
+        coBrokerName: formData.hasCoBroker ? (formData.coBrokerName || '') : '',
+        coBrokerSplitPercentage: formData.hasCoBroker ? (formData.coBrokerSplitPercentage || 0) : 0,
+        coBrokerSplitAmount: formData.hasCoBroker ? (calc.coBrokerSplitAmount || 0) : 0,
         ...(formData.propertyType === 'Lease' ? {
           titleCompanyName: 'N/A',
           escrowOfficerName: 'N/A',
           titleCompanyEmail: 'N/A',
           titleCompanyPhone: 'N/A',
         } : {}),
-        ...calc,
         companySplitAmount: calc.brokerSplitAmount,
-        status: 'pending',
+        status: (profile.role === 'admin' && originalRequest?.status === 'approved') ? 'approved' : 'pending',
         rejectionReason: null, // Clear the rejection reason upon resubmission
+        ...(originalRequest?.status === 'approved' ? {
+          approvedAt: originalRequest.approvedAt || new Date().toISOString(),
+          ...(originalRequest.brokerSignatureUrl ? { brokerSignatureUrl: originalRequest.brokerSignatureUrl } : {})
+        } : {}),
         createdAt: originalRequest?.createdAt || new Date().toISOString(),
         updatedAt: new Date().toISOString(),
       };
