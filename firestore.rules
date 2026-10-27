@@ -32,15 +32,16 @@ service cloud.firestore {
       allow update: if isSignedIn() && (request.auth.uid == userId || isAdmin());
       
       // Allow agents to delete pre-auth "ghost" documents that match their email
-      allow delete: if isAdmin() || (isSignedIn() && resource.data.email == request.auth.token.email);
+      allow delete: if isAdmin() || (isSignedIn() && request.auth.token.email != null && resource.data.email.lower() == request.auth.token.email.lower());
     }
 
     match /cdaRequests/{requestId} {
-      allow list: if isSignedIn() && (resource.data.agentId == request.auth.uid || isAdmin());
-      allow get: if isSignedIn() && (resource.data.agentId == request.auth.uid || isAdmin());
+      allow list: if isSignedIn() && (resource.data.agentId == request.auth.uid || (request.auth.token.email != null && resource.data.agentEmail.lower() == request.auth.token.email.lower()) || isAdmin());
+      allow get: if isSignedIn() && (resource.data.agentId == request.auth.uid || (request.auth.token.email != null && resource.data.agentEmail.lower() == request.auth.token.email.lower()) || isAdmin());
       allow create: if isSignedIn() && request.resource.data.agentId == request.auth.uid;
       allow update: if isSignedIn() && (
         (request.auth.uid == resource.data.agentId && (resource.data.status == 'pending' || resource.data.status == 'rejected')) ||
+        (request.auth.token.email != null && resource.data.agentEmail.lower() == request.auth.token.email.lower()) ||
         isAdmin()
       );
       allow delete: if isAdmin();

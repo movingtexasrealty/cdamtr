@@ -232,23 +232,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const signupWithEmail = async (email: string, pass: string) => {
     try {
       setError(null);
-      const userEmail = email.toLowerCase();
-      
-      // Check if authorized first
-      const isAdminEmail = ADMIN_EMAILS.some(e => e.toLowerCase() === userEmail);
-      const q = query(collection(db, 'users'), where('email', '==', userEmail));
-      const rosterSnap = await getDocs(q);
-
-      if (!isAdminEmail && rosterSnap.empty) {
-        throw new Error('Your email is not on the authorized roster. Please contact your broker.');
-      }
-
+      const userEmail = email.toLowerCase().trim();
       await createUserWithEmailAndPassword(auth, userEmail, pass);
     } catch (err: any) {
       if (err.code === 'auth/email-already-in-use') {
-        setError('This email is already registered.');
+        setError('This email is already registered. Please sign in instead.');
       } else if (err.code === 'auth/weak-password') {
         setError('Password should be at least 6 characters.');
+      } else if (err.code === 'auth/invalid-email') {
+        setError('Please enter a valid email address.');
       } else {
         setError(err.message);
       }
